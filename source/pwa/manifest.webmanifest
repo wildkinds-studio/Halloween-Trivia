@@ -1,0 +1,30 @@
+{
+  "name": "Trivia Day",
+  "short_name": "Trivia Day",
+  "description": "Halloween trivia day hosted by Game Master Meeko: guest photos, themed rounds, multiple-choice questions, tap-to-score answers and leaderboards.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0a17",
+  "theme_color": "#0d0a17",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
