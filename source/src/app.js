@@ -61,6 +61,9 @@ const ICONS = {
   gear: '<circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  phone: '<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>',
+  share: '<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
+  lock: '<rect x="4.5" y="11" width="15" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3.5"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>',
@@ -308,7 +311,7 @@ function mergeGame(a, b) {
   g.rounds = g.rounds.map((r) => {
     seen.add(r.id);
     const o = oRounds[r.id]; if (!o) return r;
-    const m = (o.at || 0) > (r.at || 0) ? Object.assign({}, r, { category: o.category, themeId: o.themeId, themeAuto: o.themeAuto, emoji: o.emoji, skip: o.skip, at: o.at }) : r;
+    const m = (o.at || 0) > (r.at || 0) ? Object.assign({}, r, { category: o.category, themeId: o.themeId, themeAuto: o.themeAuto, emoji: o.emoji, skip: o.skip, entryAt: o.entryAt, linkSalt: o.linkSalt, at: o.at }) : r;
     const oq = Object.fromEntries(o.questions.map((q) => [q.id, q]));
     const qs = new Set();
     m.questions = r.questions.map((q) => { qs.add(q.id); const x = oq[q.id]; return x && (x.at || 0) > (q.at || 0) ? clone(x) : q; });
@@ -395,7 +398,8 @@ function mergeInto(dst, src) {
   if (gMerged !== undefined) {
     if (stableStr(gMerged) !== stableStr(dst.settings.guide)) { dst.settings = Object.assign({}, dst.settings, { guide: gMerged }); changed = true; }
     // This side now holds something the other copy lacks: make its meta record newer so it gets sent on.
-    if (stableStr(gMerged) !== stableStr(gTheirs)) dst.metaAt = bump(Math.max(dst.metaAt || 0, src.metaAt || 0));
+    // (Only when the other copy carried a meta record: a games-only merge must not make stale settings look new.)
+    if ((isObj(gTheirs) || (src.metaAt || 0) > 0) && stableStr(gMerged) !== stableStr(gTheirs)) dst.metaAt = bump(Math.max(dst.metaAt || 0, src.metaAt || 0));
   }
   for (const [id, p] of Object.entries(src.players || {})) {
     const cur = dst.players[id];
@@ -427,6 +431,8 @@ function mergeInto(dst, src) {
 }
 
 let S = freshState();
+// A guest's private link opens just their own round (see Guest); it never loads this device's saved games.
+const JOIN = (() => { const m = /^#join=([A-Za-z0-9_-]{1,40})\.([A-Za-z0-9_-]{1,40})\.([a-f0-9]{32})$/.exec(typeof location !== 'undefined' ? location.hash : ''); return m ? { g: m[1], r: m[2], t: m[3] } : null; })();
 const UI = {
   route: 'home', gameId: null, roundId: null, step: 'players', returnTo: null,
   boardAnimated: {}, finalShown: {}, booted: false, renderPending: false,
@@ -450,6 +456,7 @@ const gameName = (g) => (g && String(g.name || '').trim()) || 'Untitled game';
 function commit(fn, opts = {}) {
   if (fn) fn(S);
   S.updatedAt = Date.now();
+  if (UI.guest) Guest.changed();
   Saver.schedule(opts.immediate);
   if (opts.render !== false) render();
 }
@@ -754,8 +761,9 @@ const Cloud = {
   },
   async pull() {
     this.lastPull = Date.now();
-    const [meta, players, games] = await Promise.all([
+    const [meta, players, games, entries] = await Promise.all([
       this.db.doc('trivia/meta').get(), this.db.collection('players').get(), this.db.collection('games').get(),
+      this.http ? this.db.collection('entries').get() : { docs: [] }, // rounds guests typed on their phones
     ]);
     const remote = { title: S.title, settings: S.settings, metaAt: 0, players: {}, games: {}, deletedGames: {} };
     if (meta.exists) {
@@ -778,11 +786,13 @@ const Cloud = {
       if (g.deleted) remote.deletedGames[d.id] = Number(g.updatedAt) || 0; else remote.games[d.id] = g;
     }
     const guideBefore = guide().photos;
-    const changed = mergeInto(S, migrate(remote));
+    let changed = mergeInto(S, migrate(remote));
+    const arrived = [];
+    for (const d of entries.docs) { const who = applyEntry(d.id, d.data()); if (who) arrived.push(who); }
+    if (arrived.length) { changed = true; if (UI.route === 'setup' && this.pulled) toast(`${listNames(arrived)} sent ${arrived.length === 1 ? 'their round' : 'their rounds'} from ${arrived.length === 1 ? 'their phone' : 'their phones'}`); }
     // Meeko photos another device removed: their cloud copies go too (one may have finished uploading here
     // after the removal, which would otherwise leave it in the cloud for good).
-    const guideNow = new Set(guide().photos.map((ph) => ph.id));
-    for (const ph of guideBefore) if (ph.asset && !guideNow.has(ph.id)) this.dropAsset(ph.asset);
+    this.dropGoneGuide(guideBefore);
     // Photos removed on another device go here too.
     for (const p of Object.values(S.players)) {
       const e = Photos.map[p.id];
@@ -851,7 +861,9 @@ const Cloud = {
     const remAt = Number(m.metaAt) || 0;
     if (remAt <= (this.remoteAt.has(d.path) ? this.remoteAt.get(d.path) : -1)) return;
     this.remoteAt.set(d.path, remAt);
+    const before = guide().photos;
     if (mergeInto(S, migrate({ title: typeof m.title === 'string' ? m.title : S.title, settings: isObj(m.settings) ? m.settings : S.settings, metaAt: remAt }))) { softRender(); refreshGuideSheet(); }
+    this.dropGoneGuide(before);
     S.metaAt = bump(Math.max(S.metaAt || 0, remAt));
     d.data = { v: STATE_V, title: S.title, settings: S.settings, metaAt: S.metaAt }; d.at = S.metaAt;
     Saver.pending = true; Saver.flush();
@@ -962,6 +974,7 @@ const Cloud = {
         if (gen !== this.gen) return;
         const now = guide().photos; const cur = now.find((x) => x.id === ph.id);
         if (!cur) { this.dropAsset(res.id); continue; } // removed while uploading
+        if (cur.asset && (cur.assetAt || 0) >= entry.at) { this.dropAsset(res.id); continue; } // another tab got there first
         const old = cur.asset;
         setGuide({ photos: now.map((x) => (x.id === ph.id ? { ...x, asset: res.id, assetAt: entry.at } : x)) });
         commit(null, { render: false });
@@ -996,6 +1009,12 @@ const Cloud = {
     }));
   },
   dropAsset(id) { if (this.assets && id) Promise.resolve().then(() => this.assets.delete(id)).catch(() => {}); },
+  // Meeko photos a merge just removed (another device removed them): delete their cloud copies too, since one
+  // may have finished uploading here after the removal, and the copy on this device.
+  dropGoneGuide(before) {
+    const now = new Set(guide().photos.map((ph) => ph.id));
+    for (const ph of before) if (!now.has(ph.id)) { this.dropAsset(ph.asset); if (!guideSaving.has(ph.id)) Photos.remove(ph.id); }
+  },
 };
 
 function syncInfo() {
@@ -1126,7 +1145,7 @@ function setGuide(patch) {
   // A record from before per-field stamps vouches for every field at its own stamp; keep that.
   const stamps = isObj(cur.stamps) ? { ...cur.stamps } : Object.fromEntries(cur.at ? GUIDE_FIELDS.map((k) => [k, Number(cur.at) || 0]) : []);
   for (const k of Object.keys(patch)) if (GUIDE_FIELDS.includes(k)) stamps[k] = bump(Math.max(stamps[k] || 0, cur.at || 0));
-  S.settings.guide = { ...cur, ...patch, stamps, at: bump(cur.at) };
+  S.settings.guide = { ...cur, ...patch, stamps, removed: isObj(patch.removed) ? patch.removed : isObj(cur.removed) ? cur.removed : {}, at: bump(cur.at) };
   S.metaAt = bump(S.metaAt);
 }
 const art = (name, ...a) => (typeof HART !== 'undefined' && HART[name] ? HART[name](...a) : '');
@@ -1984,6 +2003,7 @@ function viewSetup() {
     body = `
       <div class="section-title"><h2>Rounds &amp; questions</h2><button class="btn btn-sm btn-ghost" data-act="shuffle-rounds">${ic('shuffle')} Shuffle order</button></div>
       <p class="muted">Rounds play top to bottom. Each guest is trivia master for their own round and sits out the scoring for it.</p>
+      ${privacyNote()}
       <div class="round-list">${rs.map((r, i) => { const plays = !r.skip && r.questions.length; if (plays) num++; return roundRow(g, r, i, rs.length, plays ? num : 0); }).join('')}</div>`;
     const ready = rs.filter((r) => !r.skip && r.category.trim() && r.questions.length).length;
     const hosting = rs.filter((r) => !r.skip).length;
@@ -2033,6 +2053,7 @@ function setupWarnings(g) {
 function roundRow(g, r, i, n, num) {
   const p = S.players[r.masterId]; const t = themeOf(r.themeId); const c = diffCounts(r);
   const notMC = r.questions.filter((q) => mcProblem(q)).length;
+  const linkable = Cloud.http && cloudLinked() && !r.skip;
   const status = r.skip ? '<span class="chip off">Just playing</span>'
     : !r.questions.length ? '<span class="chip warn">No questions yet</span>'
       : !r.category.trim() ? '<span class="chip warn">Needs a category</span>'
@@ -2047,8 +2068,8 @@ function roundRow(g, r, i, n, num) {
       <span class="cat ${r.category.trim() ? '' : 'empty'}">${esc(r.category.trim() || 'No category yet')}</span>
       <span class="by">${r.skip ? 'Not hosting' : num ? `Round ${num}` : 'Not in the running order until it has questions'} · ${esc(p ? p.name : 'Unknown')}</span>
     </button>
-    <div class="counts">${r.questions.length && !r.skip ? `<span class="chip off">${r.questions.length} Q</span>${c[1] ? `<span class="chip d1">${c[1]} easy</span>` : ''}${c[2] ? `<span class="chip d2">${c[2]} med</span>` : ''}${c[3] ? `<span class="chip d3">${c[3]} hard</span>` : ''}` : ''}${status}</div>
-    <button class="btn btn-sm" data-act="edit-round" data-r="${r.id}">${ic('edit')} Edit</button>
+    <div class="counts">${r.entryAt && !r.skip ? `<span class="chip ok">${ic('phone')} From their phone</span>` : ''}${r.questions.length && !r.skip ? `<span class="chip off">${r.questions.length} Q</span>${c[1] ? `<span class="chip d1">${c[1]} easy</span>` : ''}${c[2] ? `<span class="chip d2">${c[2]} med</span>` : ''}${c[3] ? `<span class="chip d3">${c[3]} hard</span>` : ''}` : ''}${status}</div>
+    <div class="round-acts">${linkable ? `<button class="btn btn-sm btn-ghost" data-act="invite" data-r="${r.id}">${ic('phone')} Phone link</button>` : ''}<button class="btn btn-sm" data-act="edit-round" data-r="${r.id}">${roundHasContent(r) ? ic('lock') : ic('edit')} ${roundHasContent(r) ? 'Open' : 'Edit'}</button></div>
   </div>`;
 }
 function reviewCard(r, i) {
@@ -2065,22 +2086,23 @@ function viewRound() {
   const r = g && g.rounds.find((x) => x.id === UI.roundId);
   if (!r) { UI.route = UI.returnTo === 'play' ? 'play' : 'setup'; return viewFor(); }
   const p = S.players[r.masterId]; const t = themeOf(r.themeId);
-  const live = UI.returnTo === 'play';
+  const live = UI.returnTo === 'play'; const guest = !!UI.guest;
   return `<main class="page">
     <header class="page-head">
-      <button class="icon-btn" data-act="round-done" aria-label="Back">${ic('left')}</button>
-      <div style="flex:1;min-width:0"><div class="eyebrow">${live ? 'Editing during the game' : 'Round setup'}</div><h1>${esc(p ? p.name : 'Guest')}'s round</h1></div>
+      ${guest ? '' : `<button class="icon-btn" data-act="round-done" aria-label="Back">${ic('left')}</button>`}
+      <div style="flex:1;min-width:0"><div class="eyebrow">${guest ? `${esc(UI.guest.gameName || 'Trivia Day')} · only you can see this` : live ? 'Editing during the game' : 'Round setup'}</div><h1>${guest ? `Your round, ${esc(p ? p.name : 'Guest')}` : `${esc(p ? p.name : 'Guest')}'s round`}</h1></div>
       <button class="btn btn-primary" data-act="round-done">${ic('check')} Done</button>
     </header>
+    ${guest ? `<p class="guest-save" id="guest-save" aria-live="polite">${esc(Guest.statusText())}</p>` : ''}
     ${meekoSay(meekoLine('setup_tip', {}, r.id), { size: 'sm', cls: 'tip', pic: hashStr(r.id) })}
     <div class="editor-grid">
       <div class="stack" style="gap:20px">
         <div class="field"><label for="r-cat">Category</label><input class="input big" id="r-cat" data-bind="r-cat" value="${esc(r.category)}" placeholder="e.g. 90s Movies" maxlength="60" autocomplete="off"></div>
-        ${live && !r.skip && roundStarted(g, r) ? '' : `<button class="switch" role="switch" aria-checked="${!r.skip}" data-act="r-skip"><span class="track"></span><span>${esc(p ? p.name : 'This guest')} is hosting a round</span></button>`}
+        ${guest || (live && !r.skip && roundStarted(g, r)) ? '' : `<button class="switch" role="switch" aria-checked="${!r.skip}" data-act="r-skip"><span class="track"></span><span>${esc(p ? p.name : 'This guest')} is hosting a round</span></button>`}
         ${r.skip ? '<p class="muted">They will still play and score in everyone else\'s rounds.</p>' : `
         <div class="section-title"><h2>Questions <span class="muted nums" id="q-count">${r.questions.length}</span></h2>
           <div class="row"><button class="btn btn-sm btn-ghost" data-act="open-paste">${ic('paste')} Paste a list</button><button class="btn btn-sm btn-ghost" data-act="q-sort" ${r.questions.length < 2 ? 'disabled' : ''}>${ic('sort')} Easy to hard</button></div></div>
-        <div class="q-list" id="q-list">${r.questions.length ? r.questions.map((q, i) => qCard(q, i, r.questions.length)).join('') : `<div class="q-empty"><b>No questions yet</b><span>Type them in one by one, or paste a list your guest sent you.</span><div class="row" style="justify-content:center"><button class="btn btn-primary" data-act="q-add">${ic('plus')} Add a question</button><button class="btn" data-act="open-paste">${ic('paste')} Paste a list</button></div></div>`}</div>
+        <div class="q-list" id="q-list">${r.questions.length ? r.questions.map((q, i) => qCard(q, i, r.questions.length)).join('') : `<div class="q-empty"><b>No questions yet</b><span>${guest ? 'Type them in one by one, or paste a list you wrote earlier.' : 'Type them in one by one, or paste a list your guest sent you.'}</span><div class="row" style="justify-content:center"><button class="btn btn-primary" data-act="q-add">${ic('plus')} Add a question</button><button class="btn" data-act="open-paste">${ic('paste')} Paste a list</button></div></div>`}</div>
         ${r.questions.length ? `<div class="row"><button class="btn" data-act="q-add">${ic('plus')} Add question</button><span class="hint" id="q-hint">${esc(qHint(r))}</span></div>` : ''}`}
       </div>
       <aside class="stack" id="round-side">
@@ -2093,6 +2115,346 @@ function viewRound() {
       </aside>
     </div>
   </main>`;
+}
+// ---------- Keeping questions private ----------
+// Everyone at the party plays, the iPad's owner included, so a round's questions only show to whoever is
+// told to look: opening a round that has questions asks for the iPad to be handed to its trivia master first.
+function roundHasContent(r) {
+  return r.questions.some((q) => (q.text || '').trim() || (q.answer || '').trim() || (q.wrong || []).some((w) => String(w || '').trim()));
+}
+async function openRoundPrivately(rid, from) {
+  const g = G(); const r = g && g.rounds.find((x) => x.id === rid); if (!r) return;
+  if (roundHasContent(r)) {
+    const name = nameOf(r.masterId);
+    const body = r.entryAt
+      ? `${name} typed this round on their phone. Opening it shows their questions, so hand the iPad to ${name} first.`
+      : `This shows ${name}'s questions. Hand the iPad to ${name} so nobody else sees them, then tap Show.`;
+    if (!(await askConfirm({ title: `Only ${name} should look`, body, ok: `I'm ${name}, show it` }))) return;
+  }
+  const cur = G() && G().rounds.find((x) => x.id === rid); if (!cur) return;
+  UI.unlocked = { rid, ids: new Set(cur.questions.map((q) => q.id)) };
+  navigate('round', { roundId: rid, returnTo: from });
+}
+const GUEST_MAX_Q = 40;
+const qHasContent = (q) => !!((q.text || '').trim() || (q.answer || '').trim() || (q.wrong || []).some((w) => String(w || '').trim()));
+// A question made on this screen may be shown here.
+function seeQ(r, id) { if (UI.unlocked && UI.unlocked.rid === r.id) UI.unlocked.ids.add(id); }
+// The open round only shows questions it showed when it was opened (after the check) or that were added on
+// this screen. If others arrive (from the guest's phone, or another iPad), the round closes again.
+function guardOpenRound() {
+  if (UI.guest || UI.route !== 'round') return;
+  const g = G(); const r = g && g.rounds.find((x) => x.id === UI.roundId); if (!r) return;
+  const ok = UI.unlocked && UI.unlocked.rid === r.id ? UI.unlocked.ids : new Set();
+  if (!r.questions.some((q) => !ok.has(q.id) && qHasContent(q))) return;
+  closeOpenRound(`${nameOf(r.masterId)}'s questions just arrived, so their round is hidden again. Hand them the iPad to look.`, false);
+}
+function closeOpenRound(msg, nav = true) {
+  const g = G(); UI.unlocked = null;
+  const back = UI.returnTo === 'play' && g && g.status === 'playing' ? { route: 'play' } : { route: !g ? 'home' : g.status === 'setup' ? 'setup' : g.status === 'playing' ? 'play' : 'results', step: 'rounds' };
+  if (nav) navigate(back.route, back); else Object.assign(UI, back);
+  if (msg) setTimeout(() => toast(msg), 0);
+}
+// Put down mid-round (the iPad locked, or nobody touched it for a while): the round closes, so the next
+// person to pick it up has to go through the check.
+function hideIdleRound(msg) {
+  if (UI.guest || UI.route !== 'round') return;
+  const g = G(); const r = g && g.rounds.find((x) => x.id === UI.roundId);
+  if (r && roundHasContent(r)) closeOpenRound(msg);
+}
+function privacyNote() {
+  if (Cloud.http && cloudLinked()) return `<p class="privacy-note">${ic('phone')}<span><b>Guests can type their own round on their phone.</b> Tap <b>Phone link</b> next to their name. Their questions come back here and stay hidden, so nobody sees them before the game.</span></p>`;
+  if (Cloud.http) return `<p class="privacy-note">${ic('lock')}<span>Rounds with questions stay hidden until the iPad is handed to their trivia master. To let guests type their round on their own phone, enter the event code in Settings.</span></p>`;
+  return `<p class="privacy-note">${ic('lock')}<span>Rounds with questions stay hidden until the iPad is handed to their trivia master.</span></p>`;
+}
+// ---------- Phone links ----------
+const inviteRounds = (g) => setupRounds(g).filter((r) => !r.skip);
+const expectsPhones = (g) => !!lsGet('td:invited:' + g.id) || g.rounds.some((r) => r.entryAt);
+const inviteCache = {};
+// A round that already has questions shows them through its link, so the same hand-over check applies.
+async function openInviteGated(rid) {
+  const g = G(); const r = g && g.rounds.find((x) => x.id === rid); if (!r) return;
+  if (roundHasContent(r) || r.entryAt) {
+    const name = nameOf(r.masterId);
+    if (!(await askConfirm({ title: `Only ${name} should scan this`, body: `${name}'s round already has questions, and their link shows them. Hand the iPad to ${name}, or send the link straight to them.`, ok: `Show ${name}'s link` }))) return;
+  }
+  openInvite(rid);
+}
+function openInvite(rid) {
+  const g = G(); if (!g || !Cloud.http || !cloudLinked()) return;
+  pushOverlay({ type: 'invite', roundId: rid, url: null, err: '' });
+  const ov = topOverlay('invite'); if (ov) loadInvite(ov);
+}
+async function loadInvite(ov) {
+  const g = G(); const r = g && g.rounds.find((x) => x.id === ov.roundId); if (!r) return;
+  const rid = r.id;
+  try { const url = await inviteURL(g, r); if (ov.roundId === rid) ov.url = url; }
+  catch (e) {
+    if (ov.roundId !== rid) return;
+    ov.err = e && e.code === 'revoked' ? 'This iPad needs the event code entered again (Settings → Cloud backup).' : e && e.code === 'not_found' ? "The cloud hasn't got this game yet. Check the internet and try again." : "Couldn't make the link. Check the internet and try again.";
+  }
+  if (topOverlay('invite') === ov && ov.roundId === rid) renderOverlay(ov);
+}
+// The cloud makes the link (it holds the secret it's signed with), once it has the game.
+async function inviteURL(g, r) {
+  const salt = r.linkSalt || '';
+  const k = `${HttpCloud.key}|${g.id}.${r.id}|${salt}`;
+  if (inviteCache[k]) return inviteCache[k];
+  const ask = async () => { const res = await HttpCloud.call(`/api/invite?g=${encodeURIComponent(g.id)}&r=${encodeURIComponent(r.id)}`); return res.json(); };
+  // The cloud signs the link with what it holds for the round, so it needs this device's latest copy first.
+  const push = async () => { for (let i = 0; i < 40 && Cloud.flushing; i++) await sleep(250); await Cloud.flush(); };
+  let j = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { j = await ask(); } catch (e) { if (!e || e.code !== 'not_found' || attempt === 2) throw e; await push(); continue; }
+    if ((j.salt || '') === salt) break;
+    if (attempt === 2) throw { code: 'unavailable' };
+    await push();
+  }
+  const token = j && j.token;
+  if (!/^[a-f0-9]{32}$/.test(token || '')) throw { code: 'unavailable' };
+  lsSet('td:invited:' + g.id, Date.now());
+  return (inviteCache[k] = `${location.origin}${location.pathname}#join=${g.id}.${r.id}.${token}`);
+}
+function qrSVG(text) {
+  if (typeof qrcode !== 'function') return '';
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  const n = q.getModuleCount(); const m = 3; let d = '';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (q.isDark(y, x)) d += `M${x + m} ${y + m}h1v1h-1z`;
+  return `<svg viewBox="0 0 ${n + 2 * m} ${n + 2 * m}" role="img" aria-label="QR code for the link" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
+}
+// A guest's round, as saved through their link, replaces that round's content here. Each question keeps its
+// id and gets a fresh stamp only if it changed, and ones they deleted are marked deleted, so every device
+// merges it the same way. Returns the guest's name if anything was applied.
+function applyEntry(id, e) {
+  const [gid, rid] = String(id || '').split('.');
+  const g = S.games[gid]; if (!g || !isObj(e) || !isObj(e.round)) return '';
+  const r = g.rounds.find((x) => x.id === rid); if (!r) return '';
+  const at = Number(e.updatedAt) || 0;
+  if (at <= (r.entryAt || 0)) return '';
+  if (g.status !== 'setup' && (roundStarted(g, r) || g.status === 'finished')) return ''; // too late: it's being played
+  const er = e.round; const str = (v, n) => String(v == null ? '' : v).slice(0, n);
+  if (!Array.isArray(er.questions) || er.questions.length > GUEST_MAX_Q || JSON.stringify(er).length > 70000) return '';
+  keepPlace(g, r, () => {
+    r.category = str(er.category, 60); r.emoji = str(er.emoji, 16).trim();
+    if (er.themeAuto === false && THEME_BY_ID[er.themeId]) { r.themeId = er.themeId; r.themeAuto = false; }
+    else { r.themeAuto = true; r.themeId = THEME_BY_ID[er.themeId] ? er.themeId : suggestTheme(r.category); }
+    r.skip = false; r.entryAt = at; touchRound(r);
+    const old = new Map(r.questions.map((q) => [q.id, q])); const seen = new Set(); const qs = [];
+    for (const x of Array.isArray(er.questions) ? er.questions : []) {
+      if (!isObj(x) || !okId(x.id) || seen.has(x.id)) continue;
+      seen.add(x.id);
+      const prev = old.get(x.id);
+      const wrong = (Array.isArray(x.wrong) ? x.wrong : []).slice(0, 5).map((w) => str(w, 200));
+      const seed = Number.isInteger(x.seed) && x.seed >= 0 ? x.seed : prev && Number.isInteger(prev.seed) ? prev.seed : newSeed();
+      const q = { id: x.id, text: str(x.text, 600), answer: str(x.answer, 200), wrong: wrong.length ? wrong : [''], diff: [1, 2, 3].includes(x.diff) ? x.diff : 1, seed, at: prev ? prev.at || 0 : 0 };
+      if (!prev || stableStr([prev.text, prev.answer, prev.wrong, prev.diff, prev.seed]) !== stableStr([q.text, q.answer, q.wrong, q.diff, q.seed]) || (g.delQ[q.id] || 0) >= (q.at || 0)) touchQ(q);
+      qs.push(q);
+    }
+    for (const q of r.questions) if (!seen.has(q.id)) g.delQ[q.id] = bump(Math.max(q.at || 0, g.delQ[q.id] || 0));
+    r.questions = qs;
+  });
+  touchGame(g);
+  return nameOf(r.masterId);
+}
+
+// ---------- The guest page ----------
+// Opened from a phone link: shows that guest's round and nothing else. It never reads or writes this
+// device's saved games (a host trying a link on the iPad loses nothing), keeps an unsent copy on the phone,
+// and saves to the cloud a moment after each change.
+function guestState(j, round) {
+  const s = freshState();
+  const qs = (Array.isArray(round.questions) ? round.questions : []).filter((q) => isObj(q) && okId(q.id)).map((q) => ({
+    id: q.id, text: String(q.text || ''), answer: String(q.answer || ''), wrong: Array.isArray(q.wrong) && q.wrong.length ? q.wrong.map(String) : ['', '', ''], diff: [1, 2, 3].includes(q.diff) ? q.diff : 1, seed: Number.isInteger(q.seed) ? q.seed : newSeed(),
+  }));
+  const themeAuto = round.themeAuto !== false;
+  s.players.guest = { id: 'guest', name: j.player || 'Guest', createdAt: 1, updatedAt: 1, hasPhoto: false };
+  s.games[j.g] = normalizeGame({ id: j.g, name: j.gameName || 'Trivia Day', status: 'setup', playerIds: ['guest'], rounds: [{
+    id: j.r, masterId: 'guest', category: String(round.category || ''), emoji: String(round.emoji || ''), skip: false,
+    themeAuto, themeId: THEME_BY_ID[round.themeId] ? round.themeId : suggestTheme(String(round.category || '')), questions: qs,
+  }] });
+  return s;
+}
+const noDot = (t) => String(t || '').replace(/\.+$/, '');
+const payloadHasContent = (round) => isObj(round) && Array.isArray(round.questions) && round.questions.some((q) => isObj(q) && qHasContent(q));
+// Three-way merge of a guest's round: what both sides started from (base), the phone's copy (mine) and the
+// cloud's (theirs). Whatever only one side changed is kept; where both changed the same thing, the phone wins.
+function mergeRound(base, mine, theirs) {
+  if (!isObj(base) || !Array.isArray(base.questions)) return mine;
+  const same = (a, b) => stableStr(a) === stableStr(b);
+  const pick = (k) => (same(mine[k], base[k]) ? theirs[k] : mine[k]);
+  const theme = (x) => [x.themeId, x.themeAuto !== false];
+  const t = same(theme(mine), theme(base)) ? theirs : mine;
+  const bq = new Map(base.questions.map((q) => [q.id, q])); const mq = new Map(mine.questions.map((q) => [q.id, q])); const tq = new Map(theirs.questions.map((q) => [q.id, q]));
+  const questions = [];
+  for (const q of theirs.questions) {
+    const b = bq.get(q.id); const m = mq.get(q.id);
+    if (!m) { if (!b || !same(q, b)) questions.push(q); continue; } // deleted here, unless the other side changed it since
+    questions.push(b && same(m, b) ? q : m);
+  }
+  for (const m of mine.questions) {
+    if (tq.has(m.id)) continue;
+    const b = bq.get(m.id);
+    if (!b || !same(m, b)) questions.push(m); // added here, or changed here after the other side deleted it
+  }
+  return { category: pick('category'), emoji: pick('emoji'), themeId: t.themeId, themeAuto: t.themeAuto !== false, questions: questions.slice(0, GUEST_MAX_Q) };
+}
+const Guest = {
+  timer: null, busy: false, again: false,
+  api() { const j = UI.guest; return `/api/entry?g=${encodeURIComponent(j.g)}&r=${encodeURIComponent(j.r)}&t=${j.t}`; },
+  key() { return `td:join:${UI.guest.g}.${UI.guest.r}`; },
+  okKey() { return `td:join-ok:${UI.guest.g}.${UI.guest.r}`; },
+  payload() {
+    const g = S.games[UI.guest.g]; const r = g && g.rounds[0];
+    if (!r) return null;
+    return { category: r.category, emoji: r.emoji, themeId: r.themeId, themeAuto: r.themeAuto !== false, questions: r.questions.map((q) => ({ id: q.id, text: q.text, answer: q.answer, wrong: q.wrong, diff: q.diff, seed: q.seed })) };
+  },
+  // quiet: coming back to the page; only replaces what's shown if the cloud copy changed and nothing is unsent.
+  async load(quiet = false) {
+    const j = UI.guest;
+    if (!quiet) { j.status = 'loading'; render(); }
+    let res = null; let body = {};
+    try { res = await fetch(this.api(), { cache: 'no-store' }); body = await res.json().catch(() => ({})); } catch { res = null; }
+    const draft = lsGet(this.key()); const hasDraft = isObj(draft) && isObj(draft.round);
+    if (!res) {
+      if (quiet) return;
+      // Offline: carry on with what was typed here last time, if anything.
+      if (hasDraft) { this.open({ player: draft.player, gameName: draft.gameName, round: draft.round, base: draft.base, ver: draft.ver || '', mine: true }); this.markDirty(); j.offline = true; this.retry(); this.showStatus(); return; }
+      j.status = 'offline'; render(); return;
+    }
+    if (!res.ok || !isObj(body.round)) { if (quiet && res.status >= 500) return; j.status = res.status === 401 ? 'badlink' : res.status === 404 ? 'gone' : 'offline'; render(); return; }
+    const player = isObj(body.player) ? String(body.player.name || 'Guest') : 'Guest';
+    const gameName = isObj(body.game) ? String(body.game.name || '') : '';
+    Object.assign(j, { player, gameName });
+    if (!isObj(body.game) || body.game.status !== 'setup') { lsDel(this.key()); j.status = 'locked'; render(); return; }
+    const server = body.round; const ver = String(body.ver || '');
+    if (quiet && (j.dirty || this.busy || ver === j.ver)) return;
+    // Something typed here and not sent yet: keep it, folded into the cloud's copy if that has moved on.
+    let round = server; let dirty = false;
+    if (hasDraft && !quiet) { round = draft.ver === ver ? draft.round : mergeRound(draft.base, draft.round, server); dirty = stableStr(round) !== stableStr(server); }
+    this.open({ player, gameName, round, base: server, ver, mine: dirty });
+    if (dirty) this.markDirty(); else lsDel(this.key());
+  },
+  open({ player, gameName, round, base, ver, mine }) {
+    const j = UI.guest;
+    const wasReady = j.status === 'ready';
+    Object.assign(j, { player: player || 'Guest', gameName: gameName || '', ver: ver || '', base: isObj(base) ? base : null, lastSent: isObj(base) ? stableStr(base) : '', dirty: false, offline: false, err: '', stuck: false, dirtySince: 0 });
+    // Someone else's round can't be read just by opening their link on the wrong phone: the first time a
+    // round with questions in it opens on a phone, it asks who's looking.
+    j.status = !wasReady && !mine && payloadHasContent(round) && !lsGet(this.okKey()) ? 'confirm' : 'ready';
+    S = guestState(j, round); UI.gameId = j.g; UI.roundId = j.r; UI.route = 'round';
+    render();
+  },
+  markDirty() {
+    const j = UI.guest; const round = this.payload(); if (!round) return;
+    j.dirty = true; j.at = Date.now(); if (!j.dirtySince) j.dirtySince = j.at;
+    lsSet(this.key(), { at: j.at, round, base: j.base, ver: j.ver, player: j.player, gameName: j.gameName });
+  },
+  // Saves go a few seconds after typing stops (and at least every 30 s while typing), so a round costs a
+  // handful of saves, not one per word.
+  changed() {
+    const j = UI.guest; if (!j || j.status !== 'ready') return;
+    if (!j.claimed) { j.claimed = true; lsSet(this.okKey(), Date.now()); } // working on it here: no need to ask again
+    this.markDirty(); j.stuck = false;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.save(), Math.max(500, Math.min(8000, 30000 - (Date.now() - j.dirtySince))));
+    this.showStatus();
+  },
+  async save() {
+    const j = UI.guest; clearTimeout(this.timer); this.timer = null;
+    if (!j || !j.dirty || j.stuck || (j.status !== 'ready' && j.status !== 'done')) return;
+    if (this.busy) { this.again = true; return; }
+    const round = this.payload(); if (!round) return;
+    const sig = stableStr(round);
+    if (sig === j.lastSent) { j.dirty = false; j.dirtySince = 0; lsDel(this.key()); this.showStatus(); return; }
+    this.busy = true; const sent = j.at;
+    this.showStatus();
+    try {
+      const res = await fetch(this.api(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ round, base: j.ver }), cache: 'no-store' });
+      const b = await res.json().catch(() => ({}));
+      j.offline = false;
+      if (res.ok) {
+        Object.assign(j, { ver: String(b.ver || ''), base: round, lastSent: sig, err: '' });
+        if (j.at === sent) { j.dirty = false; j.dirtySince = 0; lsDel(this.key()); }
+      } else if (b.code === 'changed' && isObj(b.round)) {
+        // Changed on the iPad (or in another tab) since this copy was loaded: fold both together and send again.
+        const merged = mergeRound(j.base, this.payload(), b.round);
+        Object.assign(j, { ver: String(b.ver || ''), base: b.round, lastSent: stableStr(b.round), err: '' });
+        S = guestState(j, merged); render();
+        toast('Your round was also changed on the iPad. Both sets of changes are kept.');
+        this.markDirty(); clearTimeout(this.timer); this.timer = setTimeout(() => this.save(), 600);
+      } else if (b.code === 'locked') { j.dirty = false; lsDel(this.key()); j.status = 'locked'; render(); }
+      else if (res.status === 401) { j.status = 'badlink'; render(); }
+      else if (res.status === 404) { j.status = 'gone'; render(); }
+      else if ([400, 413, 429].includes(res.status)) { j.err = b.message || "Couldn't save"; j.stuck = true; } // won't fix itself: no retrying
+      else { j.err = b.message || "Couldn't save"; this.retry(); }
+    } catch { j.offline = true; this.retry(); }
+    finally {
+      this.busy = false;
+      if (this.again) { this.again = false; if (j.dirty && !j.stuck) this.save(); }
+      this.showStatus();
+    }
+  },
+  retry() { clearTimeout(this.timer); this.timer = setTimeout(() => this.save(), 8000); },
+  // Leaving the page (switching apps, closing the tab): send anything unsaved right away, once.
+  leave() {
+    const j = UI.guest; if (!j || !j.dirty || j.stuck || j.status !== 'ready' || j.leftAt === j.at) return;
+    const round = this.payload(); if (!round) return;
+    j.leftAt = j.at;
+    try { fetch(this.api(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ round, base: j.ver }), keepalive: true }).catch(() => {}); } catch { /* best effort */ }
+  },
+  statusText() {
+    const j = UI.guest; if (!j) return '';
+    if (j.stuck) return `${noDot(j.err)}.`;
+    if (j.offline) return 'Offline. Saved on this phone, and sent as soon as you are back online.';
+    if (j.err) return `${noDot(j.err)}. Trying again…`;
+    if (j.dirty || this.busy) return 'Saving…';
+    return j.lastSent ? 'All changes saved. Only you can see your questions.' : 'Only you can see your questions. Changes save as you type.';
+  },
+  showStatus() {
+    const el = document.getElementById('guest-save'); const j = UI.guest; if (!el || !j) return;
+    el.textContent = this.statusText();
+    el.classList.toggle('warn', !!(j.offline || j.err));
+    el.classList.toggle('ok', !j.offline && !j.err && !j.dirty && !this.busy);
+  },
+  async done() {
+    const j = UI.guest;
+    for (let i = 0; i < 80 && (this.busy || j.dirty) && j.status === 'ready'; i++) {
+      if (j.offline || j.stuck || j.err) break;
+      if (!this.busy && j.dirty) await this.save(); else await sleep(250);
+    }
+    if (j.status !== 'ready') return;
+    if (j.stuck || j.err) { toast(`Not saved: ${noDot(j.err)}.`, 'bad'); return; }
+    if (j.dirty) { toast("Not sent yet: you're offline. It's saved on this phone and sends when you're back online.", 'bad'); return; }
+    j.status = 'done'; window.scrollTo(0, 0); render();
+  },
+};
+function viewJoin() {
+  const j = UI.guest;
+  const box = (title, body, actions = '') => `<main class="page join-page"><div class="panel stack join-box">${meekoPic('xl', 0)}<h1>${title}</h1><p class="muted">${body}</p>${actions}</div></main>`;
+  const name = esc(j.player || '');
+  switch (j.status) {
+    case 'confirm': return box(`This is ${name}'s round`, `It already has questions in it, so only ${name} should look. Not ${name}? Close this page.`, `<div class="row join-acts"><button class="btn btn-primary" data-act="join-confirm">I'm ${name}, show it</button></div>`);
+    case 'badlink': return box("This link doesn't work", 'Ask the host to send you a new one.');
+    case 'gone': return box('This round is no longer in the game', 'Ask the host to send you a new link.');
+    case 'offline': return box("Can't reach the game", 'Check your internet connection and try again.', `<div class="row join-acts"><button class="btn btn-primary" data-act="join-retry">Try again</button></div>`);
+    case 'locked': return box('The game has started', `Your round is locked in${name ? `, ${name}` : ''}. Good luck!`);
+    case 'done': return box(`All saved${name ? `, ${name}` : ''}!`, 'Your round is in, and only you have seen your questions. You can close this page, or come back to this link to make changes until the game starts.', `<div class="row join-acts"><button class="btn" data-act="join-edit">${ic('edit')} Keep editing</button></div>`);
+    default: return box('Opening your round…', 'One moment.');
+  }
+}
+async function startGuest() {
+  // Nothing on this device is loaded or saved, and the cloud is only reached through the link.
+  Saver.blocked = true;
+  UI.guest = { ...JOIN, status: 'loading', player: '', gameName: '', ver: '', base: null, lastSent: '', dirty: false, offline: false, err: '', stuck: false };
+  document.body.classList.add('is-guest');
+  UI.booted = true;
+  window.__trivia = { get S() { return S; }, UI };
+  window.addEventListener('pagehide', () => Guest.leave());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') Guest.leave();
+    else if (UI.guest.status === 'ready') { if (UI.guest.dirty) Guest.save(); else Guest.load(true); }
+  });
+  window.addEventListener('online', () => { if (UI.guest.status === 'offline') Guest.load(); else if (UI.guest.dirty) Guest.save(); });
+  await Guest.load();
 }
 function qHint(r) {
   const n = r.questions.length;
@@ -2110,11 +2472,11 @@ function qCard(q, i, n) {
         <button class="icon-btn sm" data-act="q-del" data-q="${q.id}" aria-label="Delete question">${ic('trash')}</button>
       </div>
     </div>
-    <textarea class="textarea" id="qt-${q.id}" data-bind="q-text" data-q="${q.id}" rows="2" placeholder="Type the question">${esc(q.text)}</textarea>
+    <textarea class="textarea" id="qt-${q.id}" data-bind="q-text" data-q="${q.id}" rows="2" maxlength="600" placeholder="Type the question">${esc(q.text)}</textarea>
     <div class="mc-edit">
-      <div class="mc-row right"><span class="mc-tag ok">${ic('check')} Right answer</span><textarea class="textarea ans" id="qa-${q.id}" data-bind="q-ans" data-q="${q.id}" rows="1" placeholder="The correct answer" autocomplete="off" enterkeyhint="next">${esc(q.answer)}</textarea></div>
+      <div class="mc-row right"><span class="mc-tag ok">${ic('check')} Right answer</span><textarea class="textarea ans" id="qa-${q.id}" data-bind="q-ans" data-q="${q.id}" rows="1" maxlength="200" placeholder="The correct answer" autocomplete="off" enterkeyhint="next">${esc(q.answer)}</textarea></div>
       <span class="mc-tag no">${ic('close')} Wrong answers</span>
-      ${q.wrong.map((w, k) => `<div class="mc-row wrong"><input class="input" id="qw-${q.id}-${k}" data-bind="q-wrong" data-q="${q.id}" data-i="${k}" value="${esc(w)}" placeholder="A wrong answer" autocomplete="off" enterkeyhint="next"><button class="icon-btn sm" data-act="q-make-right" data-q="${q.id}" data-i="${k}" aria-label="Make this the right answer" title="Make this the right answer">${ic('check')}</button><button class="icon-btn sm" data-act="q-wrong-del" data-q="${q.id}" data-i="${k}" ${q.wrong.length <= 1 ? 'disabled' : ''} aria-label="Remove this wrong answer">${ic('close')}</button></div>`).join('')}
+      ${q.wrong.map((w, k) => `<div class="mc-row wrong"><input class="input" id="qw-${q.id}-${k}" data-bind="q-wrong" data-q="${q.id}" data-i="${k}" value="${esc(w)}" maxlength="200" placeholder="A wrong answer" autocomplete="off" enterkeyhint="next"><button class="icon-btn sm" data-act="q-make-right" data-q="${q.id}" data-i="${k}" aria-label="Make this the right answer" title="Make this the right answer">${ic('check')}</button><button class="icon-btn sm" data-act="q-wrong-del" data-q="${q.id}" data-i="${k}" ${q.wrong.length <= 1 ? 'disabled' : ''} aria-label="Remove this wrong answer">${ic('close')}</button></div>`).join('')}
       ${q.wrong.length < 5 ? `<button class="link-btn mc-add" data-act="q-wrong-add" data-q="${q.id}">${ic('plus')} Add another wrong answer</button>` : ''}
       <div class="mc-preview" id="qp-${q.id}">${mcPreview(q)}</div>
     </div>
@@ -2488,13 +2850,13 @@ function guideSheet(ov) {
     <div class="sheet-body"><div class="photo-edit">
       ${cropping
         ? `<div class="stack"><div class="crop-frame square" id="crop-frame"><div class="guides"></div></div><input class="range" id="crop-zoom" type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom"></div>`
-        : `<div class="stack guide-preview">${meekoPic('xl', 0, src)}${list.length > 1 ? `<p class="hint" style="text-align:center">Photo ${sel + 1} of ${list.length}</p>` : ''}</div>`}
+        : `<div class="stack guide-preview" data-gp-preview>${meekoPic('xl', 0, src)}${list.length > 1 ? `<p class="hint" style="text-align:center">Photo ${sel + 1} of ${list.length}</p>` : ''}</div>`}
       <div class="stack">
         ${cropping
           ? `<p class="hint">Fit his head inside the circle, hat and all. That circle is what shows in the game.</p>
              <div class="row"><button class="btn btn-primary" data-act="crop-use">${ic('check')} Use this photo</button><button class="btn btn-ghost" data-act="crop-cancel">Cancel</button></div>`
           : `<div class="field"><label for="pl-name">Name</label><input class="input big" id="pl-name" data-bind="pl-name" value="${esc(ov.name)}" placeholder="Meeko" maxlength="30" autocomplete="off" enterkeyhint="done"></div>
-             <div class="field"><label>Photos <span class="muted">${list.length > GUIDE_MAX ? list.length : `${list.length} of ${GUIDE_MAX}`}</span></label>
+             <div class="field"><label>Photos <span class="muted" data-gp-count>${list.length > GUIDE_MAX ? list.length : `${list.length} of ${GUIDE_MAX}`}</span></label>
                <div class="gp-grid">${list.map((ph, k) => `<div class="gp ${k === sel ? 'on' : ''}"><button class="gp-pick" data-act="gp-sel" data-i="${k}" aria-label="Show photo ${k + 1}">${ph.data ? `<img src="${esc(ph.data)}" alt="" draggable="false">` : art('dog')}</button><button class="gp-del" data-act="gp-del" data-i="${k}" aria-label="Remove photo ${k + 1}">${ic('close')}</button>${gpBadge(ph)}</div>`).join('')}
                  ${full ? '' : `<label class="gp gp-add" for="pl-lib">${ic('plus')}<span>Add</span></label>`}</div></div>
              <div class="photo-actions">
@@ -2503,14 +2865,14 @@ function guideSheet(ov) {
              </div>
              <input class="file-hidden" id="pl-cam" type="file" accept="image/*" capture="environment" data-photo-input>
              <input class="file-hidden" id="pl-lib" type="file" accept="image/*" multiple data-photo-input>
-             ${list.length > GUIDE_MAX ? `<p class="hint">Photos added on different devices are all kept. Remove some to add more.</p>` : ''}
+             <p class="hint" data-gp-over ${list.length > GUIDE_MAX ? '' : 'hidden'}>Photos added on different devices are all kept. Remove some to add more.</p>
              ${guideCloudNote(list)}
              <div class="field"><label>He switches photo</label>
                <div class="seg gp-mode" role="group" aria-label="When ${esc(name)} switches photo">
                  <button data-act="gp-mode" data-m="each" aria-pressed="${ov.mode !== 'round'}">Every time he appears</button>
                  <button data-act="gp-mode" data-m="round" aria-pressed="${ov.mode === 'round'}">Each new round</button>
                </div></div>
-             <p class="hint">Pick up to ${GUIDE_MAX} at once from your library. He shows as Game Master ${esc(name)} on the round intros, answers, leaderboard and winner screens.${list.length ? ' Tap a photo to preview it, or the × to remove it. To frame one by hand, add it on its own.' : ' Until you add one he appears as a cartoon dog.'}</p>`}
+             <p class="hint" data-gp-hint>Pick up to ${GUIDE_MAX} at once from your library. He shows as Game Master ${esc(name)} on the round intros, answers, leaderboard and winner screens.${list.length ? ' Tap a photo to preview it, or the × to remove it. To frame one by hand, add it on its own.' : ' Until you add one he appears as a cartoon dog.'}</p>`}
       </div>
     </div></div>
     ${cropping ? '' : `<div class="sheet-foot"><span class="spacer"></span><button class="btn btn-ghost" data-act="ov-close">Cancel</button><button class="btn btn-primary" data-act="guide-save">Save</button></div>`}
@@ -2532,8 +2894,10 @@ function guideCloudNote(list) {
   if (Cloud.status === 'full') return note('', `<p>${Cloud.http ? "This month's cloud allowance is used up" : 'Cloud backup is full'}, so new photos stay on this device for now.</p>`);
   if (Cloud.status === 'connecting' || Cloud.status === 'error') return note('', '<p>Backing up when the connection comes back. They are saved on this device meanwhile.</p>');
   if (Cloud.status !== 'on') return note('', '');
+  if (!Cloud.assets) return note('', '<p>Photos stay on this device here: this copy of the app can only back up names and settings.</p>');
   if (list.some((ph) => !ph.id)) return note('', `<p>New photos go up to ${where} when you tap Save.</p>`);
-  if (list.some((ph) => !gpBackedUp(ph))) return note('', `<p>${ic('upload')} Backing up to ${where}… Keep the app open for a moment.</p>`);
+  if (list.some((ph) => ph.id && Cloud.guidePhotoNeedsUpload(gpLive(ph)))) return note('', `<p>${ic('upload')} Backing up to ${where}… Keep the app open for a moment.</p>`);
+  if (list.some((ph) => !gpBackedUp(ph))) return note('', `<p>${ic('upload')} Waiting for the device that added some of these to finish backing them up.</p>`);
   return note('ok', `<p>${ic('check')} ${Cloud.http ? 'Saved to the cloud: every device with the event code gets them.' : 'Backed up to Claude: open this page on another device and they come too.'}</p>`);
 }
 function guideOverlay() { const o = overlays[overlays.length - 1]; return o && o.type === 'player' && o.guide ? o : null; }
@@ -2555,11 +2919,19 @@ function refreshGuideSheet() {
   const n = ov.photos.length;
   ov.photos = ov.photos.filter((ph) => !ph.id || liveIds.has(ph.id) || !orig.has(ph.id));
   let changed = ov.photos.length !== n;
+  // Photos whose image wasn't here yet when they were listed (still uploading on the other device).
+  for (const ph of ov.photos) if (ph.id && !ph.data) { const l = live.find((x) => x.id === ph.id); const d = l && Photos.src(guidePhotoRec(l)); if (d) { ph.data = d; changed = true; } }
   for (const ph of live) if (!orig.has(ph.id)) { ov.photos.push({ ...ph, data: Photos.src(guidePhotoRec(ph)) }); orig.add(ph.id); changed = true; }
   ov.origIds = [...orig];
   if (!changed) { refreshGuideCloud(); return; }
   ov.sel = clamp(ov.sel || 0, 0, Math.max(0, ov.photos.length - 1));
-  if (!ov.crop) renderOverlay(ov);
+  if (ov.crop) return;
+  // Swap in just the photo parts, so typing in the name box or a photo picker that's open carries on.
+  const t = document.createElement('div'); t.innerHTML = guideSheet(ov);
+  for (const sel of ['[data-gp-preview]', '[data-gp-count]', '.gp-grid', '.photo-actions', '[data-gp-over]', '[data-gp-note]', '[data-gp-hint]']) {
+    const a = $(sel, ov.el); const b = $(sel, t);
+    if (a && b && a.outerHTML !== b.outerHTML) a.replaceWith(b);
+  }
 }
 // Photos added several at a time skip the framing step: a square crop (he shows in a circle) from the
 // middle, a little above centre so ears and hats stay in.
@@ -2616,6 +2988,25 @@ function voiceSheet(ov) {
 }
 const OVERLAY_VIEWS = {
   voice: voiceSheet,
+  invite(ov) {
+    const g = G(); const r = g && g.rounds.find((x) => x.id === ov.roundId);
+    const name = r ? nameOf(r.masterId) : 'your guest';
+    const list = g ? inviteRounds(g) : [];
+    let body;
+    if (ov.err) body = `<p class="hint warn">${esc(ov.err)}</p><div class="row"><button class="btn" data-act="invite-retry">Try again</button></div>`;
+    else if (!ov.url) body = `<p class="muted">Making ${esc(name)}'s link…</p>`;
+    else body = `<div class="invite-grid"><div class="qr-box">${qrSVG(ov.url)}</div><div class="stack">
+        <p class="invite-lead"><b>${esc(name)}</b> points their phone camera at the code, or you send them the link.</p>
+        <div class="row">${typeof navigator.share === 'function' ? `<button class="btn btn-primary" data-act="invite-share">${ic('share')} Send link</button>` : ''}<button class="btn ${typeof navigator.share === 'function' ? 'btn-ghost' : 'btn-primary'}" data-act="invite-copy">${ic('copy')} Copy link</button></div>
+        <input class="input" id="invite-url" readonly value="${esc(ov.url)}" hidden>
+        <p class="hint">It opens ${esc(name)}'s round and nothing else, so no one else's questions are on it. What they type comes back to this iPad on its own and stays hidden here. The link stops working once the game starts. Sent it to the wrong person? Tap <b>Make a new link</b>.</p>
+      </div></div>`;
+    return `<div class="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="iv-t" tabindex="-1">
+      <div class="sheet-head"><h2 id="iv-t">${ic('phone')} ${esc(name)}'s phone link</h2><button class="icon-btn sm" data-act="ov-close" aria-label="Close">${ic('close')}</button></div>
+      <div class="sheet-body">${body}</div>
+      <div class="sheet-foot">${list.length > 1 ? `<button class="btn btn-ghost" data-act="invite-step" data-dir="-1">${ic('left')} Previous guest</button><button class="btn btn-ghost" data-act="invite-step" data-dir="1">Next guest ${ic('right')}</button>` : ''}<span class="spacer"></span>${ov.url ? '<button class="btn btn-ghost" data-act="invite-renew">Make a new link</button>' : ''}<button class="btn btn-primary" data-act="ov-close">Done</button></div>
+    </div></div>`;
+  },
   confirm(ov) {
     return `<div class="scrim"><div class="sheet narrow dialog" role="alertdialog" aria-modal="true" aria-labelledby="cf-t" tabindex="-1" autofocus>
       <div class="sheet-head"><h2 id="cf-t">${esc(ov.title)}</h2></div>
@@ -2701,7 +3092,7 @@ const OVERLAY_VIEWS = {
     return `<div class="scrim" data-dismiss><div class="sheet narrow" role="dialog" aria-modal="true" aria-labelledby="jp-t" tabindex="-1">
       <div class="sheet-head"><h2 id="jp-t">Jump to a round</h2><button class="icon-btn sm" data-act="ov-close" aria-label="Close">${ic('close')}</button></div>
       <div class="sheet-body"><div class="jump-list">${pr.map((x, i) => `<div class="jump-row ${r && x.id === r.id ? 'current' : ''}"><span class="n">${i + 1}</span><span class="t">${esc(roundEmoji(x))} ${esc(x.category || 'Untitled')}<small>${esc(nameOf(x.masterId))}${g.done[x.id] ? ' · scored' : ''}</small></span>
-        <span class="b"><button class="btn btn-sm" data-act="jump" data-r="${x.id}" data-s="intro">Start</button><button class="btn btn-sm" data-act="jump" data-r="${x.id}" data-s="a">Answers</button>${g.done[x.id] ? `<button class="btn btn-sm" data-act="jump" data-r="${x.id}" data-s="board">Scores</button>` : ''}</span></div>`).join('')}</div>
+        <span class="b"><button class="btn btn-sm" data-act="jump" data-r="${x.id}" data-s="intro">Start</button>${roundStarted(g, x) ? `<button class="btn btn-sm" data-act="jump" data-r="${x.id}" data-s="a">Answers</button>` : ''}${g.done[x.id] ? `<button class="btn btn-sm" data-act="jump" data-r="${x.id}" data-s="board">Scores</button>` : ''}</span></div>`).join('')}</div>
         ${(() => { const out = g.rounds.filter((x) => x.skip && g.playerIds.includes(x.masterId) && x.questions.length && S.players[x.masterId]); return out.length ? `<h3 style="margin-top:8px">Taken out</h3><div class="jump-list">${out.map((x) => `<div class="jump-row"><span class="n">–</span><span class="t">${esc(roundEmoji(x))} ${esc(x.category || 'Untitled')}<small>${esc(nameOf(x.masterId))}</small></span><span class="b"><button class="btn btn-sm" data-act="unskip" data-r="${x.id}">Put back</button></span></div>`).join('')}</div>` : ''; })()}</div>
     </div></div>`;
   },
@@ -2797,6 +3188,8 @@ function cropToDataURL(cr) {
 // ===================== Render =====================
 let appRoot;
 function viewFor() {
+  if (UI.guest) return UI.guest.status === 'ready' && G() ? viewRound() : viewJoin();
+  guardOpenRound();
   switch (UI.route) {
     case 'players': return viewPlayers();
     case 'setup': return G() ? viewSetup() : (UI.route = 'home', viewHome());
@@ -2906,6 +3299,7 @@ function layoutPickGrid() {
   }
 }
 function persistUI() {
+  if (UI.guest) return; // a guest link on this device must not change where the app itself reopens
   try { localStorage.setItem('td:ui', JSON.stringify({ route: UI.route, gameId: UI.gameId, roundId: UI.roundId, step: UI.step, returnTo: UI.returnTo })); } catch { /* per-viewer convenience only */ }
 }
 function restoreUI(hot) {
@@ -2921,6 +3315,8 @@ function restoreUI(hot) {
   const g = G();
   if (UI.route === 'play' && g && g.status === 'setup') UI.route = 'setup';
   if (UI.route === 'setup' && g && g.status !== 'setup') UI.route = g.status === 'playing' ? 'play' : 'results';
+  // A round's questions are only shown after the hand-over check, so reopening never lands inside one.
+  if (UI.route === 'round') Object.assign(UI, UI.returnTo === 'play' && g && g.status === 'playing' ? { route: 'play' } : { route: g ? (g.status === 'setup' ? 'setup' : g.status === 'playing' ? 'play' : 'results') : 'home', step: 'rounds' });
 }
 
 function navigate(route, extra = {}) {
@@ -2937,6 +3333,24 @@ function openGame(id) {
   if (g.status === 'playing') navigate('play');
   else if (g.status === 'finished') navigate('results');
   else navigate('setup', { step: g.playerIds.length >= 2 ? (setupRounds(g).length ? 'rounds' : 'players') : 'players' });
+}
+
+// Start the game (once phone rounds have had a last chance to arrive).
+async function startGame() {
+  const g0 = G();
+  if (g0 && Cloud.http && Cloud.pulled && expectsPhones(g0)) { toast('Checking for rounds from phones…'); await Promise.race([Cloud.pull().catch(() => {}), sleep(6000)]); }
+  const g = G(); if (!g) return;
+  pruneSetup(g); const pr = playable(g);
+  warmFonts(pr);
+  if (!pr.length || g.playerIds.length < 2) return;
+  const notMC = pr.reduce((n, r) => n + r.questions.filter((q) => mcProblem(q)).length, 0);
+  if (notMC && !(await askConfirm({ title: `${plural(notMC, 'question')} ${notMC === 1 ? "isn't" : "aren't"} multiple choice yet`, body: `${notMC === 1 ? "It's" : "They're"} missing a right answer or wrong answers, so ${notMC === 1 ? 'it shows' : 'they show'} without choices. You can fix ${notMC === 1 ? 'it' : 'them'} now, or from the game menu mid-game.`, ok: 'Start anyway' }))) return;
+  g.status = 'playing'; g.startedAt = g.startedAt || Date.now();
+  setPos(g, 'intro', pr[0].id, 0);
+  commit(null, { render: false, immediate: true });
+  if (Cloud.http && expectsPhones(g)) Cloud.flush(); // the cloud locks the phone links once it knows
+  Sound.play('fanfare');
+  navigate('play');
 }
 
 // ===================== Actions =====================
@@ -3012,6 +3426,38 @@ const ACT = {
   'add-player'(el) { openPlayerSheet(null, el.dataset.from || UI.route); },
   'edit-player'(el) { openPlayerSheet(el.dataset.p, UI.route); },
   'ov-close'() { popOverlay(); },
+  invite(el) { openInviteGated(el.dataset.r); },
+  async 'invite-renew'() {
+    const ov = topOverlay('invite'); const g = G(); const r = g && ov && g.rounds.find((x) => x.id === ov.roundId); if (!r) return;
+    const name = nameOf(r.masterId);
+    if (!(await askConfirm({ title: `Make a new link for ${name}?`, body: `The link you gave out before stops working. Send ${name} the new one.`, ok: 'Make a new link' }))) return;
+    r.linkSalt = Math.random().toString(36).slice(2, 12); touchRound(r); touchGame(g); commit(null, { render: false });
+    const cur = topOverlay('invite'); if (!cur) return;
+    Object.assign(cur, { url: null, err: '' }); renderOverlay(cur); loadInvite(cur);
+  },
+  'invite-retry'() { const ov = topOverlay('invite'); if (!ov) return; ov.err = ''; ov.url = null; renderOverlay(ov); loadInvite(ov); },
+  'invite-step'(el) {
+    const ov = topOverlay('invite'); const g = G(); if (!ov || !g) return;
+    const list = inviteRounds(g); const i = list.findIndex((x) => x.id === ov.roundId);
+    const next = list[(i + Number(el.dataset.dir) + list.length) % list.length]; if (!next) return;
+    popOverlay(); openInviteGated(next.id);
+  },
+  async 'invite-share'() {
+    const ov = topOverlay('invite'); if (!ov || !ov.url) return;
+    const g = G(); const r = g && g.rounds.find((x) => x.id === ov.roundId); const name = r ? nameOf(r.masterId) : '';
+    try { await navigator.share({ title: `${name}'s trivia round`, text: `Hi ${name}! Here's your private link to add your trivia category and questions. Only you can see them:`, url: ov.url }); }
+    catch (e) { if (!e || e.name !== 'AbortError') ACT['invite-copy'](); }
+  },
+  async 'invite-copy'() {
+    const ov = topOverlay('invite'); if (!ov || !ov.url) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(ov.url); ok = true; } catch { /* fall back below */ }
+    if (!ok) { const inp = $('#invite-url', ov.el); if (inp) { inp.hidden = false; inp.select(); try { ok = document.execCommand('copy'); } catch { ok = false; } } }
+    toast(ok ? 'Link copied' : 'Select the link and copy it');
+  },
+  'join-retry'() { Guest.load(); },
+  'join-confirm'() { if (!UI.guest) return; lsSet(Guest.okKey(), Date.now()); UI.guest.status = 'ready'; render(); },
+  'join-edit'() { if (!UI.guest) return; UI.guest.status = 'ready'; render(); },
   'photo-remove'() { const ov = topOverlay('player'); if (!ov) return; ov.photo = null; renderOverlay(ov); },
   'crop-cancel'() { const ov = topOverlay('player'); if (!ov) return; ov.crop = null; renderOverlay(ov); },
   'crop-use'() {
@@ -3075,9 +3521,9 @@ const ACT = {
     slots.forEach((slot, k) => { g.rounds[slot] = shuffled[k]; });
     touchGame(g); commit(); toast('Running order shuffled');
   },
-  'edit-round'(el) { navigate('round', { roundId: el.dataset.r, returnTo: 'setup' }); },
-  'edit-round-live'(el) { navigate('round', { roundId: el.dataset.r, returnTo: 'play' }); },
-  'round-done'() { const back = UI.returnTo === 'play' ? 'play' : 'setup'; navigate(back, back === 'setup' ? { step: 'rounds' } : {}); },
+  'edit-round'(el) { openRoundPrivately(el.dataset.r, 'setup'); },
+  'edit-round-live'(el) { openRoundPrivately(el.dataset.r, 'play'); },
+  'round-done'() { if (UI.guest) { Guest.done(); return; } const back = UI.returnTo === 'play' ? 'play' : 'setup'; navigate(back, back === 'setup' ? { step: 'rounds' } : {}); },
   async 'r-skip'() {
     const g = G(); const r = curEditRound(); if (!r) return;
     if (!r.skip && g.status !== 'setup') {
@@ -3096,8 +3542,10 @@ const ACT = {
   'theme-auto'() { const g = G(); const r = curEditRound(); r.themeAuto = true; r.themeId = suggestTheme(r.category); touchRound(r); touchGame(g); commit(null, { render: false }); refreshRoundSide(r); },
   'q-add'() {
     const g = G(); const r = curEditRound();
+    if (UI.guest && r.questions.length >= GUEST_MAX_Q) { toast(`${GUEST_MAX_Q} questions is the most for one round`); return; }
     const last = r.questions[r.questions.length - 1];
     const q = { id: uid('q'), text: '', answer: '', wrong: ['', '', ''], seed: newSeed(), diff: last ? last.diff : 1, at: bump(0) };
+    seeQ(r, q.id);
     r.questions.push(q); touchGame(g); commit();
     const t = $('#qt-' + q.id); if (t) { t.focus(); t.scrollIntoView({ block: 'center', behavior: reduceMotion() ? 'auto' : 'smooth' }); }
   },
@@ -3169,21 +3617,15 @@ const ACT = {
     const ov = topOverlay('paste'); const g = G(); const r = curEditRound(); if (!ov || !r) return;
     const parsed = parseQuestions(ov.text, ov.defDiff);
     if (!parsed.questions.length) return;
-    for (const q of parsed.questions) r.questions.push({ id: uid('q'), text: q.text, answer: q.answer, wrong: q.wrong.length ? q.wrong : ['', '', ''], seed: newSeed(), diff: q.diff, at: bump(0) });
+    if (UI.guest && r.questions.length + parsed.questions.length > GUEST_MAX_Q) { toast(`That would make ${r.questions.length + parsed.questions.length}. ${GUEST_MAX_Q} questions is the most for one round.`, 'bad'); return; }
+    for (const q of parsed.questions) { const id = uid('q'); seeQ(r, id); r.questions.push({ id, text: q.text, answer: q.answer, wrong: q.wrong.length ? q.wrong : ['', '', ''], seed: newSeed(), diff: q.diff, at: bump(0) }); }
     if (parsed.category && !r.category.trim()) { r.category = parsed.category; if (r.themeAuto !== false) r.themeId = suggestTheme(r.category); }
     touchGame(g); popOverlay(); commit(); toast(`Added ${plural(parsed.questions.length, 'question')}`);
   },
   async 'start-game'() {
-    const g = G(); pruneSetup(g); const pr = playable(g);
-    warmFonts(pr);
-    if (!pr.length || g.playerIds.length < 2) return;
-    const notMC = pr.reduce((n, r) => n + r.questions.filter((q) => mcProblem(q)).length, 0);
-    if (notMC && !(await askConfirm({ title: `${plural(notMC, 'question')} ${notMC === 1 ? "isn't" : "aren't"} multiple choice yet`, body: `${notMC === 1 ? "It's" : "They're"} missing a right answer or wrong answers, so ${notMC === 1 ? 'it shows' : 'they show'} without choices. You can fix ${notMC === 1 ? 'it' : 'them'} now, or from the game menu mid-game.`, ok: 'Start anyway' }))) return;
-    g.status = 'playing'; g.startedAt = g.startedAt || Date.now();
-    setPos(g, 'intro', pr[0].id, 0);
-    commit(null, { render: false, immediate: true });
-    Sound.play('fanfare');
-    navigate('play');
+    if (UI.starting) return;
+    UI.starting = true;
+    try { await startGame(); } finally { UI.starting = false; }
   },
   // play
   fwd() {
@@ -3238,8 +3680,9 @@ const ACT = {
     Sound.play('tap');
   },
   jump(el) {
-    const g = G(); const s = el.dataset.s; const r = g.rounds.find((x) => x.id === el.dataset.r);
+    const g = G(); let s = el.dataset.s; const r = g.rounds.find((x) => x.id === el.dataset.r);
     if (!r) return;
+    if (s === 'a' && !roundStarted(g, r)) s = 'intro'; // never show a round's questions before it's played
     const target = { roundId: r.id, stage: s, q: 0 };
     if (!samePos(target, g.pos) && !g.resume) g.resume = { pos: { ...g.pos }, status: g.status };
     if (s === 'board') UI.boardAnimated[`${g.id}:${r.id}`] = true;
@@ -3274,15 +3717,23 @@ const ACT = {
     const ov = topOverlay('player'); if (!ov || !ov.guide || ov.saving) return;
     ov.saving = true;
     try {
-      const cur = guide(); const keep = []; const orig = new Set(ov.origIds || []);
+      const orig = new Set(ov.origIds || []);
+      // New photos are stored on this device first. Everything after that runs without a pause, so a pull or
+      // an upload finishing meanwhile is read from the current record rather than overwritten.
+      const added = new Map();
       for (const ph of ov.photos) {
-        // Kept photos take their current record, in case an upload finished while the sheet was open
-        // (and one removed on another device meanwhile stays removed).
-        if (ph.id) { const c = cur.photos.find((x) => x.id === ph.id); if (c) keep.push({ id: c.id, at: c.at, asset: c.asset || null, assetAt: c.assetAt || 0 }); continue; }
+        if (ph.id) continue;
         const id = uid('mk'); const at = Date.now();
         guideSaving.add(id);
         await Photos.set(id, ph.data, at);
-        keep.push({ id, at, asset: null, assetAt: 0 });
+        added.set(ph, { id, at, asset: null, assetAt: 0 });
+      }
+      const cur = guide(); const keep = [];
+      for (const ph of ov.photos) {
+        // Kept photos take their current record (an upload may have finished while the sheet was open), and
+        // one removed on another device meanwhile stays removed.
+        if (!ph.id) { keep.push(added.get(ph)); continue; }
+        const c = cur.photos.find((x) => x.id === ph.id); if (c) keep.push({ id: c.id, at: c.at, asset: c.asset || null, assetAt: c.assetAt || 0 });
       }
       // Photos another device added while the sheet was open are kept too.
       for (const c of cur.photos) if (!orig.has(c.id) && !keep.some((k) => k.id === c.id)) keep.push({ id: c.id, at: c.at, asset: c.asset || null, assetAt: c.assetAt || 0 });
@@ -3290,7 +3741,8 @@ const ACT = {
       // so a device that still has them doesn't bring them back.
       const raw = isObj(S.settings.guide) ? S.settings.guide : {};
       const removed = { ...(isObj(raw.removed) ? raw.removed : {}) };
-      for (const old of cur.photos) if (orig.has(old.id) && !keep.some((k) => k.id === old.id)) { removed[old.id] = bump(Math.max(old.at || 0, removed[old.id] || 0)); await Photos.remove(old.id); Cloud.dropAsset(old.asset); }
+      const gone = cur.photos.filter((old) => orig.has(old.id) && !keep.some((k) => k.id === old.id));
+      for (const old of gone) removed[old.id] = bump(Math.max(old.at || 0, removed[old.id] || 0));
       const patch = { photos: keep, removed, hasPhoto: keep.length > 0, photoAt: null, photoAsset: null, photoAssetAt: null };
       const name = String(ov.name || '').trim().slice(0, 30) || 'Meeko'; const mode = ov.mode === 'round' ? 'round' : 'each';
       const o = ov.orig || {};
@@ -3300,6 +3752,7 @@ const ACT = {
       guideSaving.clear();
       popOverlay();
       commit(null, { immediate: true });
+      for (const old of gone) { Cloud.dropAsset(old.asset); await Photos.remove(old.id); }
       Cloud.uploadGuidePhoto();
       toast('Saved');
     } finally { ov.saving = false; }
@@ -3521,7 +3974,11 @@ async function onRestorePicked(input) {
     // Meeko from the backup replaces the current one on every device: current photos it doesn't have are
     // marked removed (or the cloud would merge them back in), and its settings are stamped as newest.
     const ids = new Set(guidePhotoList(inGuide).map((ph) => ph.id));
-    const removed = isObj(inGuide.removed) ? { ...inGuide.removed } : {};
+    // Removals known here are kept (or a device that still has an old photo would bring it back), except for
+    // the backup's own photos, which it restores.
+    const removed = {};
+    for (const m of [isObj(S.settings.guide) ? S.settings.guide.removed : null, inGuide.removed]) if (isObj(m)) for (const [id, t] of Object.entries(m)) if (okId(id) && Number.isFinite(t)) removed[id] = Math.max(removed[id] || 0, t);
+    for (const id of ids) delete removed[id];
     for (const ph of guide().photos) if (!ids.has(ph.id)) removed[ph.id] = bump(Math.max(ph.at || 0, removed[ph.id] || 0, now));
     inGuide.removed = removed;
     inGuide.at = bump(Math.max(now, Number(isObj(S.settings.guide) && S.settings.guide.at) || 0));
@@ -3610,10 +4067,20 @@ function bindEvents() {
       const ov = topOverlay('player'); if (ov && ov.crop) { ov.crop.reset = true; renderOverlay(ov); }
     }, 150);
   });
+  let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') { mirrorNow(); Saver.flush(); Cloud.flush(); }
-    else { if (UI.route === 'play') keepAwake(true); Cloud.refresh(); }
+    if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); mirrorNow(); Saver.flush(); Cloud.flush(); }
+    else {
+      if (hiddenAt && Date.now() - hiddenAt > 30000) hideIdleRound('The round was closed while the iPad was put away. Open it again to carry on.');
+      hiddenAt = 0;
+      if (UI.route === 'play') keepAwake(true); Cloud.refresh();
+    }
   });
+  let lastTouch = Date.now();
+  for (const t of ['pointerdown', 'keydown', 'input']) document.addEventListener(t, () => { lastTouch = Date.now(); }, true);
+  setInterval(() => { if (Date.now() - lastTouch > 5 * 60000) { lastTouch = Date.now(); hideIdleRound('The round was closed after 5 minutes without a tap. Open it again to carry on.'); } }, 15000);
+  // A phone link pasted into this tab opens the guest page.
+  window.addEventListener('hashchange', () => { if (UI.guest || /^#join=/.test(location.hash)) location.reload(); });
   document.addEventListener('focusout', () => {
     if (!UI.renderPending) return;
     setTimeout(() => { const a = document.activeElement; if (!(a && a.matches && a.matches('input, textarea'))) softRender(); }, 0);
@@ -3702,6 +4169,7 @@ async function start(hot) {
   ovRoot = document.getElementById('overlays');
   bindEvents();
   addSpookyLayer();
+  if (JOIN) { await startGuest(); return; }
   try { await loadSaved(); } catch (e) {
     console.error('load failed', e);
     await showLoadFailed();
@@ -3715,6 +4183,12 @@ async function start(hot) {
   try { window.claude && window.claude.hot && window.claude.hot.snapshot && window.claude.hot.snapshot(() => ({ ui: { route: UI.route, gameId: UI.gameId, roundId: UI.roundId, step: UI.step, returnTo: UI.returnTo } })); } catch { /* optional */ }
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* optional */ }
   Cloud.init();
+  // While guests are typing on their phones, look for their rounds every so often on the setup screen.
+  setInterval(() => {
+    const g = G();
+    if (!g || UI.route !== 'setup' || g.status !== 'setup' || document.visibilityState !== 'visible' || !Cloud.http || !Cloud.pulled || !expectsPhones(g)) return;
+    if (Date.now() - (Cloud.lastPull || 0) > 15000) Cloud.refresh();
+  }, 5000);
   window.__trivia = { get S() { return S; }, UI, Cloud, Local, Photos, computeStandings, playable, parseQuestions, suggestTheme };
 }
 (function boot() {

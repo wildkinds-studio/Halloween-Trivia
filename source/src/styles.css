@@ -1028,3 +1028,30 @@ p.gp-cloudnote { flex-direction: row; align-items: center; gap: 8px; }
 .gp-cloudnote svg { width: 16px; height: 16px; flex: none; }
 .gp-cloudnote.ok { color: var(--slime); }
 .gp-cloudnote.warn { background: rgba(255,138,31,.1); border: 1px solid rgba(255,138,31,.45); border-radius: 14px; padding: 12px 14px; color: var(--text); }
+
+/* ---------- Private rounds and phone links ---------- */
+.round-acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.chip svg { width: 14px; height: 14px; }
+.privacy-note { display: flex; gap: 10px; align-items: flex-start; background: rgba(155,92,255,.1); border: 1px solid rgba(155,92,255,.4); border-radius: 14px; padding: 12px 14px; color: var(--text); font-size: 15px; }
+.privacy-note svg { width: 20px; height: 20px; flex: none; margin-top: 1px; color: #c4a2ff; }
+.invite-grid { display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr); gap: 22px; align-items: center; }
+.qr-box { background: #fff; border-radius: 18px; padding: 10px; box-shadow: 0 0 0 4px var(--pumpkin, #ff8a1f), 0 18px 40px rgba(0,0,0,.4); }
+.qr-box svg { display: block; width: 100%; height: auto; }
+.invite-lead { font-size: 18px; }
+.sheet-head h2 svg { width: 22px; height: 22px; vertical-align: -3px; }
+.guest-save { font-weight: 700; font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 8px; margin-top: -8px; }
+.guest-save::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.guest-save.ok { color: var(--slime, #8be04e); }
+.guest-save.ok::before { background: var(--slime, #8be04e); }
+.guest-save.warn { color: #ffd27a; }
+.guest-save.warn::before { background: #ffd27a; }
+.join-page { justify-content: center; }
+.join-box { max-width: 520px; margin: 0 auto; text-align: center; align-items: center; padding: 28px 22px; }
+.join-box h1 { font-size: clamp(28px, 6vw, 40px); }
+.join-acts { justify-content: center; }
+@media (max-width: 760px) {
+  .invite-grid { grid-template-columns: 1fr; }
+  .qr-box { max-width: 260px; margin: 0 auto; }
+  .round-row { grid-template-columns: auto auto minmax(0, 1fr); }
+  .round-row .counts, .round-row .round-acts { grid-column: 1 / -1; justify-content: flex-start; }
+}

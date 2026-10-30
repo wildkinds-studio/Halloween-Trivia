@@ -14,7 +14,7 @@ const FONTS = [
 
 const css = read('styles.css');
 const opt = (p) => (fs.existsSync(path.join(__dirname, 'src', p)) ? read(p) + '\n' : '');
-const js = read('themes.js') + '\n' + opt('halloween-art.js') + opt('meeko-lines.js') + opt('sfx.js') + read('app.js');
+const js = read('themes.js') + '\n' + opt('halloween-art.js') + opt('meeko-lines.js') + opt('sfx.js') + opt('qr.js') + read('app.js');
 if (/<\/script/i.test(js)) throw new Error('JS contains a closing script tag');
 
 const head = `<title>Trivia Day</title>

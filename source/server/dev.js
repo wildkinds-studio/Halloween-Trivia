@@ -3,7 +3,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { handleDb, handleAsset, handleLogin, handlePing } from './lib/core.js';
+import { handleDb, handleAsset, handleLogin, handlePing, handleInvite, handleEntry } from './lib/core.js';
 import { createMockBlob } from './lib/mockblob.js';
 
 const root = path.resolve(process.argv[2] || '.');
@@ -24,7 +24,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/__mock/reset') { blob.files.clear(); for (const k of Object.keys(blob.ops)) blob.ops[k] = 0; blob.faults.length = 0; apiDown = false; latency = 0; res.end('ok'); return; }
   let route = null;
   if (url.pathname.startsWith('/_blob/')) { route = handleAsset; url.pathname = '/api/asset'; url.searchParams.set('id', req.url.split('/_blob/')[1].split(/[?#]/)[0]); }
-  else route = { '/api/db': handleDb, '/api/asset': handleAsset, '/api/login': handleLogin, '/api/ping': handlePing }[url.pathname];
+  else route = { '/api/db': handleDb, '/api/asset': handleAsset, '/api/login': handleLogin, '/api/ping': handlePing, '/api/invite': handleInvite, '/api/entry': handleEntry }[url.pathname];
   if (route) {
     if (apiDown) { req.socket.destroy(); return; }
     req.on('error', () => {}); res.on('error', () => {});
