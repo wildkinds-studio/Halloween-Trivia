@@ -14,7 +14,7 @@ const FONTS = [
 
 const css = read('styles.css');
 const opt = (p) => (fs.existsSync(path.join(__dirname, 'src', p)) ? read(p) + '\n' : '');
-const js = read('themes.js') + '\n' + opt('halloween-art.js') + opt('meeko-lines.js') + read('app.js');
+const js = read('themes.js') + '\n' + opt('halloween-art.js') + opt('meeko-lines.js') + opt('sfx.js') + read('app.js');
 if (/<\/script/i.test(js)) throw new Error('JS contains a closing script tag');
 
 const head = `<title>Trivia Day</title>
@@ -75,6 +75,13 @@ for (const f of fs.readdirSync(path.join(__dirname, 'dist', 'standalone'))) fs.c
 for (const f of fs.readdirSync(path.join(__dirname, 'server', 'api'))) fs.copyFileSync(path.join(__dirname, 'server', 'api', f), path.join(dep, 'api', f));
 for (const f of ['core.js', 'blob.js']) fs.copyFileSync(path.join(__dirname, 'server', 'lib', f), path.join(dep, 'lib', f));
 fs.copyFileSync(path.join(__dirname, 'server', 'vercel.json'), path.join(dep, 'vercel.json'));
+fs.copyFileSync(path.join(__dirname, 'server', 'fetch-app.sh'), path.join(dep, 'fetch-app.sh'));
+// What the Vercel build checks the downloaded app and the uploaded functions against.
+const sums = [];
+for (const d of ['public', 'api', 'lib']) for (const f of fs.readdirSync(path.join(dep, d)).sort()) {
+  sums.push(require('crypto').createHash('sha256').update(fs.readFileSync(path.join(dep, d, f))).digest('hex') + '  ' + d + '/' + f);
+}
+fs.writeFileSync(path.join(dep, 'SHA256SUMS'), sums.join('\n') + '\n');
 let blobVersion = '2.8.2';
 try { blobVersion = require('./server/node_modules/@vercel/blob/package.json').version; } catch { /* not installed here: use the tested version */ }
 fs.writeFileSync(path.join(dep, 'package.json'), JSON.stringify({ name: 'trivia-day', private: true, type: 'module', engines: { node: '22.x' }, dependencies: { '@vercel/blob': blobVersion } }, null, 2) + '\n');

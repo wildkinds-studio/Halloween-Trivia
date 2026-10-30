@@ -992,3 +992,22 @@ body.is-play[data-stage="board"] .spooky .bat, body.is-play[data-stage="final"] 
 .gp-add svg { width: 20px; height: 20px; }
 .gp-mode { flex-wrap: wrap; border-radius: 22px; }
 .btn.is-off { opacity: .45; pointer-events: none; }
+
+/* Meeko's voice and sounds (Settings) */
+.vp-switches { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 22px; }
+.vp-sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 24px; }
+.vp-slider { display: flex; flex-direction: column; gap: 6px; font-weight: 700; }
+.vp-slider span { display: flex; justify-content: space-between; color: var(--muted); font-size: 14px; }
+.vp-slider b { color: var(--text); font-variant-numeric: tabular-nums; }
+.vp-list { display: flex; flex-direction: column; gap: 6px; }
+.vp-group { margin-top: 8px; font-weight: 800; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.vp-group small { text-transform: none; letter-spacing: 0; font-weight: 600; margin-left: 6px; color: var(--witch); }
+.vp-row { display: flex; align-items: center; gap: 10px; border: 2px solid var(--line); border-radius: 14px; background: var(--panel); padding: 4px 8px 4px 4px; }
+.vp-row.on { border-color: var(--pumpkin); background: rgba(255,138,31,.08); }
+.vp-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; background: none; border: 0; padding: 8px; text-align: left; min-height: 48px; }
+.vp-dot { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--muted); flex: none; }
+.vp-row.on .vp-dot { border-color: var(--pumpkin); box-shadow: inset 0 0 0 4px var(--panel); background: var(--pumpkin); }
+.vp-txt { min-width: 0; display: flex; flex-direction: column; }
+.vp-txt b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vp-txt small { color: var(--muted); font-size: 13px; }
+.vp-play svg { width: 18px; height: 18px; }

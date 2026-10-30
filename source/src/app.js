@@ -968,11 +968,30 @@ function updateSyncNote() {
 
 // ===================== Sound =====================
 const Sound = {
-  ctx: null,
+  ctx: null, buffers: {}, loading: {},
+  // Meeko's recorded barks (SFX_DATA), decoded once and played through Web Audio.
+  sample(name, vol = 0.9) {
+    const c = this.ensure(); if (!c || typeof SFX_DATA === 'undefined' || !SFX_DATA[name]) return;
+    const play = (buf) => { try { const src = c.createBufferSource(); const g = c.createGain(); g.gain.value = vol; src.buffer = buf; src.connect(g); g.connect(c.destination); src.start(); } catch { /* ignore */ } };
+    if (this.buffers[name]) { play(this.buffers[name]); return; }
+    this.load(name).then((b) => { if (b) play(b); });
+  },
+  load(name) {
+    const c = this.ctx;
+    if (!this.loading[name]) {
+      const bin = atob(SFX_DATA[name]); const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      this.loading[name] = new Promise((res, rej) => c.decodeAudioData(bytes.buffer, res, rej)).then((b) => (this.buffers[name] = b)).catch(() => null);
+    }
+    return this.loading[name];
+  },
   ensure() {
     if (!S.settings.sound) return null;
     try {
-      if (!this.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; this.ctx = new AC(); }
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; this.ctx = new AC();
+        if (typeof SFX_DATA !== 'undefined') for (const n of Object.keys(SFX_DATA)) this.load(n);
+      }
       if (this.ctx.state === 'suspended') this.ctx.resume();
       return this.ctx;
     } catch { return null; }
@@ -1024,8 +1043,12 @@ function guide() {
   return {
     id: GUIDE_ID, name: typeof g.name === 'string' && g.name.trim() ? g.name.trim().slice(0, 30) : 'Meeko',
     voice: g.voice !== false, mode: g.mode === 'round' ? 'round' : 'each', photos,
+    // Voice choice is remembered by name too, since each device has its own list of voices.
+    voiceURI: typeof g.voiceURI === 'string' ? g.voiceURI : '', voiceName: typeof g.voiceName === 'string' ? g.voiceName : '',
+    rate: numIn(g.rate, 0.5, 2, 1.02), pitch: numIn(g.pitch, 0.1, 2, 1.12), bark: g.bark !== false,
   };
 }
+function numIn(v, lo, hi, dflt) { const n = Number(v); return Number.isFinite(n) && n >= lo && n <= hi ? n : dflt; }
 // A photo entry in the shape Photos.src and the cloud code use for players.
 const guidePhotoRec = (ph) => ({ id: ph.id, hasPhoto: true, photoAt: ph.at, photoAsset: ph.asset, photoAssetAt: ph.assetAt });
 // The photo for his n-th appearance (null: none yet, so the cartoon shows).
@@ -1119,43 +1142,81 @@ function finalLine(g) {
     : meekoLine('final_winner', { winner: nameOf(top[0].id), points: top[0].score }, g.id);
 }
 
-// Meeko's voice: the device's text-to-speech, only when sound is on.
+// Meeko's voice: the device's text-to-speech, only when sound is on. The voice, speed and pitch are
+// chosen in Settings (Voice and sounds); "Automatic" picks the best Australian English voice available.
+const FUN_VOICES = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Fred|Junior|Kathy|Ralph)\b/;
+const ACCENTS = { AU: 'Australian', GB: 'British', US: 'American', IE: 'Irish', IN: 'Indian', ZA: 'South African', NZ: 'New Zealand', CA: 'Canadian', SC: 'Scottish' };
+const accentOf = (lang) => { const m = /^en[-_]([A-Za-z]{2})/.exec(lang || ''); return m ? `${ACCENTS[m[1].toUpperCase()] || m[1].toUpperCase()} English` : (lang || ''); };
 const Voice = {
-  v: undefined,
+  auto: undefined, timer: null,
   ok() { return 'speechSynthesis' in window && typeof SpeechSynthesisUtterance === 'function'; },
-  pick() {
-    if (this.v !== undefined) return this.v;
-    let vs = [];
-    try { vs = speechSynthesis.getVoices() || []; } catch { vs = []; }
+  list() { if (!this.ok()) return []; try { return speechSynthesis.getVoices() || []; } catch { return []; } },
+  autoPick(vs = this.list()) {
+    if (this.auto !== undefined && vs.length) return this.auto;
     if (!vs.length) return null;
-    const en = vs.filter((x) => /^en[-_]/i.test(x.lang));
+    const en = vs.filter((x) => /^en[-_]/i.test(x.lang) && !FUN_VOICES.test(x.name));
     const by = (re) => en.find((x) => re.test(x.lang));
-    this.v = en.find((x) => /^en[-_]AU/i.test(x.lang) && /karen|lee|catherine|premium|enhanced/i.test(x.name)) || by(/^en[-_]AU/i) || by(/^en[-_]GB/i) || by(/^en[-_]US/i) || en[0] || null;
-    return this.v;
+    this.auto = en.find((x) => /^en[-_]AU/i.test(x.lang) && /premium|enhanced/i.test(x.name)) || en.find((x) => /^en[-_]AU/i.test(x.lang) && /karen|lee|catherine/i.test(x.name))
+      || by(/^en[-_]AU/i) || by(/^en[-_]GB/i) || by(/^en[-_]US/i) || en[0] || null;
+    return this.auto;
   },
-  say(text) {
-    if (!this.ok() || !text || !S.settings.sound || !guide().voice) return;
+  find(uri, name, vs = this.list()) { return (uri && vs.find((x) => x.voiceURI === uri)) || (name && vs.find((x) => x.name === name)) || null; },
+  pick() { const gd = guide(); return this.find(gd.voiceURI, gd.voiceName) || this.autoPick(); },
+  speak(text, v, rate, pitch) {
     try {
-      speechSynthesis.cancel();
+      clearTimeout(this.timer); speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
-      const v = this.pick(); if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-AU';
-      u.rate = 1.02; u.pitch = 1.12; u.volume = 1;
+      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-AU';
+      u.rate = rate; u.pitch = pitch; u.volume = 1;
       speechSynthesis.speak(u);
     } catch { /* speech is a nice-to-have */ }
   },
-  stop() { if (this.ok()) { try { speechSynthesis.cancel(); } catch { /* ignore */ } } },
+  // `still` (optional) is checked when a delayed line is due, so it never plays over a different screen.
+  say(text, delay = 0, still = null) {
+    if (!this.ok() || !text || !S.settings.sound || !guide().voice) return;
+    clearTimeout(this.timer);
+    const go = () => { if (still && !still()) return; const gd = guide(); this.speak(text, this.pick(), gd.rate, gd.pitch); };
+    if (delay) this.timer = setTimeout(go, delay); else go();
+  },
+  // Settings preview: plays even when the game's sound is muted (they tapped to hear it).
+  preview(text, v, rate, pitch) { if (this.ok()) this.speak(text, v, rate, pitch); },
+  stop() { clearTimeout(this.timer); if (this.ok()) { try { speechSynthesis.cancel(); } catch { /* ignore */ } } },
+  // iPad only lets a page start speech from a tap; an empty utterance on the first tap unlocks it for later.
+  unlock() {
+    if (this.unlocked || !this.ok()) return;
+    this.unlocked = true;
+    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch { /* ignore */ }
+  },
 };
-if (Voice.ok()) { try { speechSynthesis.addEventListener('voiceschanged', () => { Voice.v = undefined; }); } catch { /* old Safari */ } }
+if (Voice.ok()) {
+  try {
+    speechSynthesis.addEventListener('voiceschanged', () => {
+      Voice.auto = undefined;
+      const ov = topOverlay('voice'); if (ov) renderOverlay(ov);
+    });
+  } catch { /* old Safari */ }
+}
 
 // After a render: type out a new line (once per screen) and say it; stop talking when he's off screen.
 function meekoAfterRender() {
   const el = $('.meeko-line[data-say-key]', appRoot);
-  if (!el) { if (UI.meekoTalking) { Voice.stop(); UI.meekoTalking = false; } return; }
+  if (!el) { if (UI.meekoTalking) { Voice.stop(); UI.meekoTalking = false; } UI.meekoKey = null; return; }
   const key = el.dataset.sayKey; const text = el.getAttribute('aria-label') || '';
+  // Moved to a different Meeko screen: drop anything still queued or playing from the last one.
+  if (UI.meekoKey && UI.meekoKey !== key && UI.meekoTalking) { Voice.stop(); UI.meekoTalking = false; }
+  UI.meekoKey = key;
   UI.meekoSaid = UI.meekoSaid || {};
   if (!key || UI.meekoSaid[key]) return;
   UI.meekoSaid[key] = true;
-  if (UI.route === 'play') { Voice.say(text); UI.meekoTalking = true; }
+  if (UI.route === 'play') {
+    // A woof on the round intro, a bark on answers and the leaderboard, a howl for the winner; he speaks after it.
+    const stage = document.body.dataset.stage;
+    const bark = guide().bark && S.settings.sound ? { intro: 'woofwoof', aintro: 'bark', board: 'bark', final: 'howl' }[stage] : null;
+    const still = () => { const cur = $('.meeko-line[data-say-key]', appRoot); return !!cur && cur.dataset.sayKey === key; };
+    if (bark) { if (stage === 'final') setTimeout(() => { if (still()) Sound.sample('howl', 0.8); }, 1500); else Sound.sample(bark); }
+    Voice.say(text, !bark ? 0 : stage === 'final' ? 4300 : stage === 'intro' ? 800 : 450, still);
+    UI.meekoTalking = true;
+  }
   if (reduceMotion()) return;
   const typed = $('.typed', el); el.classList.add('typing');
   const chars = Array.from(text); let n = 0;
@@ -2317,6 +2378,12 @@ const cloudLinked = () => Cloud.http && !['needkey', 'badkey'].includes(Cloud.st
 function cloudKeyForm(id) {
   return `<form class="row cloud-form" data-cloud-form onsubmit="return false"><input class="input" id="${id}" type="text" inputmode="text" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Event code" maxlength="60" enterkeyhint="go" style="max-width:260px"><button class="btn btn-primary" data-act="cloud-connect" data-input="${id}">${ic('check')} Connect</button></form>`;
 }
+function voiceSummary() {
+  const gd = guide();
+  if (!gd.voice) return `Voice off${gd.bark ? ', barks on' : ''}.`;
+  const v = Voice.find(gd.voiceURI, gd.voiceName);
+  return `Voice: ${v ? v.name : gd.voiceName ? `${gd.voiceName} (not on this device, using Automatic)` : 'Automatic'}${gd.bark ? ', with barks' : ''}.`;
+}
 function cloudSettingHTML() {
   return cloudLinked()
     ? `<div class="setting"><div class="txt"><b>Cloud backup</b><span>On. Every device that enters the event code shares the same players, photos and games, so you can set up on a phone and play on the iPad.</span></div><button class="btn btn-ghost" data-act="cloud-disconnect">Disconnect this device</button></div>`
@@ -2334,8 +2401,8 @@ function viewSettings() {
     <header class="page-head"><button class="icon-btn" data-act="route" data-to="home" aria-label="Back to home">${ic('left')}</button><div style="flex:1;min-width:0"><h1>Settings</h1></div></header>
     <div class="settings-list">
       <div class="setting"><div class="txt"><b>Event name</b><span>Shown on the home screen and the winner screen.</span></div><input class="input" style="max-width:360px" id="s-title" data-bind="title" value="${esc(S.title)}" maxlength="40" autocomplete="off"></div>
-      <div class="setting guide-setting">${meekoPic('sm')}<div class="txt"><b>Game Master ${esc(guide().name)}</b><span>Your host. He announces each round, comments on the scores and crowns the winner. ${guide().photos.length ? `${plural(guide().photos.length, 'photo')}, ${guide().mode === 'round' ? 'a new one each round' : 'a new one every time he appears'}.` : 'Add up to 10 photos and he switches between them.'}</span></div>
-        <div class="row"><button class="btn" data-act="edit-guide">${ic('camera')} Photos and name</button><button class="switch" role="switch" aria-checked="${guide().voice}" data-act="toggle-voice"><span class="track"></span><span>${guide().voice ? 'Voice on' : 'Voice off'}</span></button></div></div>
+      <div class="setting guide-setting">${meekoPic('sm')}<div class="txt"><b>Game Master ${esc(guide().name)}</b><span>Your host. He announces each round, comments on the scores and crowns the winner. ${voiceSummary()} ${guide().photos.length ? `${plural(guide().photos.length, 'photo')}, ${guide().mode === 'round' ? 'a new one each round' : 'a new one every time he appears'}.` : 'Add up to 10 photos and he switches between them.'}</span></div>
+        <div class="row"><button class="btn" data-act="edit-guide">${ic('camera')} Photos and name</button><button class="btn" data-act="open-voice">${ic('soundOn')} Voice and sounds</button></div></div>
       <div class="setting"><div class="txt"><b>Sound effects</b><span>Chimes for reveals, correct taps and the leaderboard.</span></div><button class="switch" role="switch" aria-checked="${!!S.settings.sound}" data-act="toggle-sound"><span class="track"></span><span>${S.settings.sound ? 'On' : 'Off'}</span></button></div>
       <div class="setting"><div class="txt"><b>Where your data lives</b><span>${esc(syncInfo().text)}. ${cloudLinked() ? 'Photos are backed up privately and shared only with devices that have the event code.' : 'Photos stay with this app and are never shared.'}</span></div>${syncNoteHTML()}</div>
       ${Cloud.http ? cloudSettingHTML() : ''}
@@ -2396,7 +2463,49 @@ function autoCropDataURL(canvas) {
 }
 
 // ---------- Overlay views ----------
+const VOICE_SAMPLE = (name) => `Hello! I'm Game Master ${name}. Round 1 is Horror Movies, so grab your pens and let's get spooky!`;
+function voiceRow(v, ov, auto) {
+  const id = v ? v.voiceURI : '';
+  const on = (ov.uri || '') === id;
+  const label = v ? v.name : 'Automatic';
+  const sub = v ? accentOf(v.lang) + (/premium|enhanced/i.test(v.name) ? ' · high quality' : '') : `Best Australian voice on this device${auto ? ` (${auto.name})` : ''}`;
+  return `<div class="vp-row ${on ? 'on' : ''}"><button class="vp-pick" data-act="vp-pick" data-uri="${esc(id)}" aria-pressed="${on}"><span class="vp-dot"></span><span class="vp-txt"><b>${esc(label)}</b><small>${esc(sub)}</small></span></button>
+    <button class="icon-btn sm vp-play" data-act="vp-play" data-uri="${esc(id)}" aria-label="Hear ${esc(label)}">${ic('play')}</button></div>`;
+}
+function voiceSheet(ov) {
+  const vs = Voice.list(); const auto = Voice.autoPick(vs);
+  const en = vs.filter((v) => /^en([-_]|$)/i.test(v.lang));
+  const order = ['AU', 'GB', 'IE', 'NZ', 'US'];
+  const rank = (v) => { const k = order.indexOf((/^en[-_]([A-Za-z]{2})/.exec(v.lang) || [])[1] || ''); return (k < 0 ? 9 : k) * 10 + (/premium/i.test(v.name) ? 0 : /enhanced/i.test(v.name) ? 1 : 2); };
+  const normal = en.filter((v) => !FUN_VOICES.test(v.name)).sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const fun = en.filter((v) => FUN_VOICES.test(v.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const missing = ov.uri && !Voice.find(ov.uri, ov.name, vs);
+  return `<div class="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="vp-t" tabindex="-1">
+    <div class="sheet-head"><h2 id="vp-t">${esc(guide().name)}'s voice and sounds</h2><button class="icon-btn sm" data-act="ov-close" aria-label="Close">${ic('close')}</button></div>
+    <div class="sheet-body stack" style="gap:18px">
+      <div class="vp-switches">
+        <button class="switch" role="switch" aria-checked="${ov.voice}" data-act="vp-voice"><span class="track"></span><span>He speaks his lines</span></button>
+        <button class="switch" role="switch" aria-checked="${ov.bark}" data-act="vp-bark"><span class="track"></span><span>Barks when he appears, howls for the winner</span></button>
+        <button class="btn btn-sm btn-ghost" data-act="vp-woof">${ic('soundOn')} Hear the bark</button>
+      </div>
+      <div class="vp-sliders">
+        <label class="vp-slider"><span>Speed <b id="vp-rate-v">${ov.rate.toFixed(2)}×</b></span><input class="range" type="range" min="0.6" max="1.5" step="0.02" value="${ov.rate}" data-bind="vp-rate" aria-label="Speed"></label>
+        <label class="vp-slider"><span>Pitch <b id="vp-pitch-v">${ov.pitch.toFixed(2)}</b></span><input class="range" type="range" min="0.5" max="2" step="0.02" value="${ov.pitch}" data-bind="vp-pitch" aria-label="Pitch"></label>
+      </div>
+      ${!Voice.ok() ? '<p class="hint">This browser has no text-to-speech, so he stays quiet here.</p>' : !vs.length ? '<p class="hint">Loading the voices on this device…</p>' : ''}
+      ${missing ? `<p class="hint">${esc(ov.name || 'The chosen voice')} isn't on this device, so Automatic is used here.</p>` : ''}
+      <div class="vp-list">
+        <div class="vp-group">Recommended</div>${voiceRow(null, ov, auto)}
+        ${normal.length ? `<div class="vp-group">English voices on this device</div>${normal.map((v) => voiceRow(v, ov)).join('')}` : ''}
+        ${fun.length ? `<div class="vp-group">Fun voices <small>try Whisper or Bad News for spooky</small></div>${fun.map((v) => voiceRow(v, ov)).join('')}` : ''}
+      </div>
+      <p class="hint">Want more? On the iPad open Settings → Accessibility → Spoken Content → Voices → English and download an "Enhanced" or "Premium" voice (they sound much more natural), then close and reopen this app.</p>
+    </div>
+    <div class="sheet-foot"><span class="spacer"></span><button class="btn btn-ghost" data-act="ov-close">Cancel</button><button class="btn btn-primary" data-act="vp-save">Save</button></div>
+  </div></div>`;
+}
 const OVERLAY_VIEWS = {
+  voice: voiceSheet,
   confirm(ov) {
     return `<div class="scrim"><div class="sheet narrow dialog" role="alertdialog" aria-modal="true" aria-labelledby="cf-t" tabindex="-1" autofocus>
       <div class="sheet-head"><h2 id="cf-t">${esc(ov.title)}</h2></div>
@@ -2971,7 +3080,7 @@ const ACT = {
     stepForward(g);
     commit(null, { render: false, immediate: true });
     // Round and answer intros get a spooky sting, unless Meeko is about to speak.
-    if (g.pos.stage === 'intro' || g.pos.stage === 'aintro') Sound.play(guide().voice && Voice.ok() ? 'next' : 'spooky');
+    if (g.pos.stage === 'intro' || g.pos.stage === 'aintro') { if (!guide().bark) Sound.play(guide().voice && Voice.ok() ? 'next' : 'spooky'); }
     else if (g.pos.stage !== 'board' && g.pos.stage !== 'final') Sound.play('next');
     render();
   },
@@ -3071,6 +3180,30 @@ const ACT = {
       toast('Saved');
     } finally { ov.saving = false; }
   },
+  'open-voice'() {
+    const gd = guide(); const v = Voice.find(gd.voiceURI, gd.voiceName);
+    pushOverlay({ type: 'voice', uri: v ? v.voiceURI : gd.voiceURI, name: gd.voiceName, rate: gd.rate, pitch: gd.pitch, voice: gd.voice, bark: gd.bark });
+  },
+  'vp-pick'(el) {
+    const ov = topOverlay('voice'); if (!ov) return;
+    const v = Voice.find(el.dataset.uri, null);
+    ov.uri = el.dataset.uri; ov.name = v ? v.name : '';
+    renderOverlay(ov); ACT['vp-play'](el);
+  },
+  'vp-play'(el) {
+    const ov = topOverlay('voice'); if (!ov) return;
+    const v = el.dataset.uri ? Voice.find(el.dataset.uri, null) : Voice.autoPick();
+    Voice.preview(VOICE_SAMPLE(guide().name), v, ov.rate, ov.pitch);
+  },
+  'vp-voice'() { const ov = topOverlay('voice'); if (!ov) return; ov.voice = !ov.voice; if (!ov.voice) Voice.stop(); renderOverlay(ov); },
+  'vp-bark'() { const ov = topOverlay('voice'); if (!ov) return; ov.bark = !ov.bark; renderOverlay(ov); if (ov.bark) Sound.sample('woofwoof'); },
+  'vp-woof'() { const ov = topOverlay('voice'); const was = S.settings.sound; S.settings.sound = true; Sound.sample(ov && ov.n % 2 ? 'howl' : 'woofwoof', 0.8); S.settings.sound = was; if (ov) ov.n = (ov.n || 0) + 1; },
+  'vp-save'() {
+    const ov = topOverlay('voice'); if (!ov) return;
+    const v = ov.uri ? Voice.find(ov.uri, ov.name) : null;
+    setGuide({ voiceURI: ov.uri || '', voiceName: ov.uri ? (v ? v.name : ov.name || '') : '', rate: ov.rate, pitch: ov.pitch, voice: ov.voice, bark: ov.bark });
+    Voice.stop(); popOverlay(); commit(); toast('Saved');
+  },
   'toggle-voice'() {
     setGuide({ voice: !guide().voice });
     commit();
@@ -3156,6 +3289,8 @@ const ACT = {
 };
 
 const BIND = {
+  'vp-rate'(el) { const ov = topOverlay('voice'); if (!ov) return; ov.rate = numIn(el.value, 0.5, 2, 1.02); const b = $('#vp-rate-v', ov.el); if (b) b.textContent = ov.rate.toFixed(2) + '×'; },
+  'vp-pitch'(el) { const ov = topOverlay('voice'); if (!ov) return; ov.pitch = numIn(el.value, 0.1, 2, 1.12); const b = $('#vp-pitch-v', ov.el); if (b) b.textContent = ov.pitch.toFixed(2); },
   'g-name'(el) { const g = G(); g.name = el.value; touchGame(g); commit(null, { render: false }); const h = $('.page-head h1'); if (h) h.textContent = gameName(g); },
   title(el) { S.title = el.value; S.metaAt = bump(S.metaAt); commit(null, { render: false }); },
   'pl-name'(el) { const ov = topOverlay('player'); if (ov) { ov.name = el.value; el.classList.remove('invalid'); } },
@@ -3271,6 +3406,7 @@ async function onRestorePicked(input) {
 }
 
 function bindEvents() {
+  document.addEventListener('pointerdown', () => Voice.unlock(), { once: true, capture: true });
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-act]');
     if (!el) {

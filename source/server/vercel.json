@@ -1,5 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "sh fetch-app.sh",
+  "outputDirectory": "public",
   "rewrites": [{ "source": "/_blob/:id", "destination": "/api/asset?id=:id" }],
   "functions": { "api/*.js": { "maxDuration": 20 } },
   "headers": [
