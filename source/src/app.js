@@ -348,20 +348,54 @@ function mergeGame(a, b) {
   return g;
 }
 
+// Meeko's photo list from a stored guide record (including the single photo from before he had several).
+function guidePhotoList(g) {
+  if (Array.isArray(g.photos)) return g.photos.filter((x) => isObj(x) && okId(x.id));
+  return g.hasPhoto !== false && (typeof g.photoAsset === 'string' || g.photoAt) ? [{ id: GUIDE_ID, at: Number(g.photoAt) || 0, asset: typeof g.photoAsset === 'string' ? g.photoAsset : null, assetAt: Number(g.photoAssetAt) || 0 }] : [];
+}
+// Two copies of Meeko: each setting comes from whichever copy changed it last; photos are the union of both,
+// minus any removed on either side after they were added (`removed` keeps when each was taken out).
+function mergeGuide(a, b) {
+  if (!isObj(a)) return isObj(b) ? clone(b) : a;
+  if (!isObj(b)) return clone(a);
+  const [newer, older] = (Number(b.at) || 0) > (Number(a.at) || 0) ? [b, a] : [a, b];
+  const out = clone(newer);
+  // Settings field by field (a copy without per-field stamps vouches for all of them at its own stamp).
+  const st = (g, k) => (isObj(g.stamps) ? Number(g.stamps[k]) || 0 : Number(g.at) || 0);
+  out.stamps = {};
+  for (const k of GUIDE_FIELDS) {
+    const from = st(older, k) > st(newer, k) ? older : newer;
+    if (k in from) out[k] = clone(from[k]); else delete out[k];
+    const t = Math.max(st(older, k), st(newer, k)); if (t) out.stamps[k] = t;
+  }
+  const removed = {};
+  for (const r of [older.removed, newer.removed]) if (isObj(r)) for (const [id, at] of Object.entries(r)) if (okId(id) && Number.isFinite(at)) removed[id] = Math.max(removed[id] || 0, at);
+  const byId = {};
+  for (const ph of [...guidePhotoList(older), ...guidePhotoList(newer)]) {
+    const cur = byId[ph.id];
+    if (!cur || (ph.at || 0) > (cur.at || 0) || ((ph.at || 0) === (cur.at || 0) && (ph.assetAt || 0) > (cur.assetAt || 0))) byId[ph.id] = clone(ph);
+  }
+  out.photos = Object.values(byId).filter((ph) => !(removed[ph.id] >= (ph.at || 0))).sort((x, y) => (x.at || 0) - (y.at || 0) || (x.id < y.id ? -1 : 1));
+  out.removed = removed;
+  if (out.photos.length || Array.isArray(a.photos) || Array.isArray(b.photos)) { out.hasPhoto = out.photos.length > 0; out.photoAt = null; out.photoAsset = null; out.photoAssetAt = null; }
+  return out;
+}
+
 // Merge another copy of the state into dst, record by record: the newer player, game, title or
 // deletion wins. A stale tab, device or backup can therefore add and update, but never wipe.
 function mergeInto(dst, src) {
   let changed = false;
-  // Title and sound go by the meta stamp; Meeko's photo and name by their own, so changing one
-  // setting on a device never undoes a newer Meeko change from another.
-  const guideAt = (st) => (st && isObj(st.guide) ? Number(st.guide.at) || 0 : 0);
+  // Title and sound go by the meta stamp. Meeko is merged on his own (mergeGuide): his settings by their
+  // stamp and his photos one by one, so a photo added on any device is never lost to another device's list.
+  const gMine = dst.settings && dst.settings.guide; const gTheirs = src.settings && src.settings.guide;
   if ((src.metaAt || 0) > (dst.metaAt || 0)) {
-    const mine = dst.settings && dst.settings.guide;
     dst.title = src.title; dst.settings = Object.assign({}, dst.settings, src.settings); dst.metaAt = src.metaAt; changed = true;
-    if (guideAt({ guide: mine }) > guideAt(dst.settings)) { dst.settings.guide = mine; dst.metaAt = bump(dst.metaAt); }
-  } else if (guideAt(src.settings) > guideAt(dst.settings)) {
-    dst.settings = Object.assign({}, dst.settings, { guide: clone(src.settings.guide) });
-    dst.metaAt = bump(Math.max(dst.metaAt || 0, src.metaAt || 0)); changed = true;
+  }
+  const gMerged = mergeGuide(gMine, gTheirs);
+  if (gMerged !== undefined) {
+    if (stableStr(gMerged) !== stableStr(dst.settings.guide)) { dst.settings = Object.assign({}, dst.settings, { guide: gMerged }); changed = true; }
+    // This side now holds something the other copy lacks: make its meta record newer so it gets sent on.
+    if (stableStr(gMerged) !== stableStr(gTheirs)) dst.metaAt = bump(Math.max(dst.metaAt || 0, src.metaAt || 0));
   }
   for (const [id, p] of Object.entries(src.players || {})) {
     const cur = dst.players[id];
@@ -693,12 +727,13 @@ const Cloud = {
     this.status = 'needkey'; updateSyncNote();
   },
   async tryPull() {
-    const gen = ++this.gen;
+    const gen = ++this.gen; const was = this.status;
     try {
       await Promise.race([this.pull(), sleep(15000).then(() => { throw { code: 'unavailable', message: 'timed out' }; })]);
       if (gen !== this.gen) return;
       this.pulled = true; this.status = 'on'; this.fails = 0;
       updateSyncNote();
+      if (was !== 'on') softRender();
       this.schedule(200);
       this.cacheRemotePhotos().then(() => this.uploadPendingPhotos());
     } catch (e) {
@@ -742,7 +777,12 @@ const Cloud = {
       this.remoteAt.set('games/' + d.id, Number(g.updatedAt) || 0);
       if (g.deleted) remote.deletedGames[d.id] = Number(g.updatedAt) || 0; else remote.games[d.id] = g;
     }
+    const guideBefore = guide().photos;
     const changed = mergeInto(S, migrate(remote));
+    // Meeko photos another device removed: their cloud copies go too (one may have finished uploading here
+    // after the removal, which would otherwise leave it in the cloud for good).
+    const guideNow = new Set(guide().photos.map((ph) => ph.id));
+    for (const ph of guideBefore) if (ph.asset && !guideNow.has(ph.id)) this.dropAsset(ph.asset);
     // Photos removed on another device go here too.
     for (const p of Object.values(S.players)) {
       const e = Photos.map[p.id];
@@ -754,6 +794,7 @@ const Cloud = {
       S.updatedAt = Math.max(S.updatedAt, Date.now());
       Saver.pending = true; Saver.flush();
       softRender();
+      refreshGuideSheet();
     }
     // A merge can leave this device holding something newer than the cloud: send it back up.
     if (this.pulled && !this.flushing && this.docsToPush().length) this.schedule();
@@ -802,6 +843,19 @@ const Cloud = {
     Saver.pending = true; Saver.flush();
     return true;
   },
+  // Same for the meta record (title, settings, Meeko): another device may have added photos since we looked.
+  async reconcileMeta(d) {
+    const snap = await this.db.doc(d.path).get();
+    if (!snap.exists) return;
+    const m = snap.data() || {};
+    const remAt = Number(m.metaAt) || 0;
+    if (remAt <= (this.remoteAt.has(d.path) ? this.remoteAt.get(d.path) : -1)) return;
+    this.remoteAt.set(d.path, remAt);
+    if (mergeInto(S, migrate({ title: typeof m.title === 'string' ? m.title : S.title, settings: isObj(m.settings) ? m.settings : S.settings, metaAt: remAt }))) { softRender(); refreshGuideSheet(); }
+    S.metaAt = bump(Math.max(S.metaAt || 0, remAt));
+    d.data = { v: STATE_V, title: S.title, settings: S.settings, metaAt: S.metaAt }; d.at = S.metaAt;
+    Saver.pending = true; Saver.flush();
+  },
   async write(path, data) {
     const ref = this.db.doc(path);
     const body = clone(data);
@@ -827,6 +881,7 @@ const Cloud = {
         if (d.path.startsWith('games/') && !d.data.deleted && !(await this.reconcileGame(d))) continue;
         if (gen !== this.gen) return;
         if (this.db.setMany) { batch.push(d); continue; }
+        if (d.path === 'trivia/meta') { await this.reconcileMeta(d); if (gen !== this.gen) return; }
         await this.write(d.path, d.data); this.remoteAt.set(d.path, d.at);
       }
       // The home-screen cloud takes every changed document in one request.
@@ -961,6 +1016,7 @@ function syncInfo() {
 function syncNoteHTML() { const s = syncInfo(); return `<div class="sync-note ${s.cls}" data-sync><span class="led"></span><span>${esc(s.text)}</span></div>`; }
 function updateSyncNote() {
   for (const el of $$('[data-sync]')) el.outerHTML = syncNoteHTML();
+  refreshGuideCloud();
   const chip = $('[data-save-chip]');
   const bad = syncInfo().cls === 'bad' || Local.degraded;
   if (chip) { chip.hidden = !bad; chip.textContent = syncInfo().cls === 'bad' ? 'Not saving' : 'Backup storage'; }
@@ -1023,22 +1079,23 @@ const Sound = {
 };
 
 // ===================== Game Master Meeko =====================
-// The host character: a dog in a witch hat who announces rounds, comments on the leaderboard and crowns
-// the winner. His name, voice setting and up to 10 photos live in settings.guide (synced like the event
-// name). Each photo is stored like a player's under its own id ('mk…'), and he switches photo as the game goes.
+// The host character: a dog who announces rounds, comments on the leaderboard and crowns the winner.
+// His name, voice setting and photos live in settings.guide (synced like the event name). Each photo is
+// stored like a player's under its own id ('mk…'), and he switches photo as the game goes. Up to 10 can be
+// added at a time; photos added on two devices at once are all kept.
 const GUIDE_ID = 'guide'; // the single photo from before he had several
-const GUIDE_MAX = 10;
+const GUIDE_MAX = 10; // the most the sheet adds; a list merged from two devices can hold more
 const isGuidePhotoId = (id) => id === GUIDE_ID || /^mk/.test(id);
 const guideSaving = new Set(); // photos being saved right now (not yet listed in settings.guide)
 function guide() {
   const g = isObj(S.settings.guide) ? S.settings.guide : {};
   let photos;
   if (Array.isArray(g.photos)) {
-    photos = g.photos.filter((x) => isObj(x) && okId(x.id) && isGuidePhotoId(x.id)).slice(0, GUIDE_MAX)
+    photos = g.photos.filter((x) => isObj(x) && okId(x.id) && isGuidePhotoId(x.id))
       .map((x) => ({ id: x.id, at: Number(x.at) || 0, asset: typeof x.asset === 'string' && okId(x.asset) ? x.asset : null, assetAt: Number(x.assetAt) || 0 }));
   } else {
     const has = g.hasPhoto !== false && (typeof g.photoAsset === 'string' || Photos.map[GUIDE_ID]);
-    photos = has ? [{ id: GUIDE_ID, at: Number(g.photoAt) || 0, asset: typeof g.photoAsset === 'string' ? g.photoAsset : null, assetAt: Number(g.photoAssetAt) || 0 }] : [];
+    photos = has ? guidePhotoList({ ...g, photoAt: g.photoAt || 1 }) : [];
   }
   return {
     id: GUIDE_ID, name: typeof g.name === 'string' && g.name.trim() ? g.name.trim().slice(0, 30) : 'Meeko',
@@ -1062,15 +1119,20 @@ function meekoTurn(g, i, stage) {
   if (guide().mode === 'round') return i;
   return i * 3 + ({ intro: 0, aintro: 1, board: 2, final: 0 }[stage] || 0);
 }
+// Each of his settings carries its own stamp, so a device only overrides what was actually changed on it.
+const GUIDE_FIELDS = ['name', 'mode', 'voice', 'bark', 'rate', 'pitch', 'voiceURI', 'voiceName'];
 function setGuide(patch) {
   const cur = isObj(S.settings.guide) ? S.settings.guide : {};
-  S.settings.guide = { ...cur, ...patch, at: bump(cur.at) };
+  // A record from before per-field stamps vouches for every field at its own stamp; keep that.
+  const stamps = isObj(cur.stamps) ? { ...cur.stamps } : Object.fromEntries(cur.at ? GUIDE_FIELDS.map((k) => [k, Number(cur.at) || 0]) : []);
+  for (const k of Object.keys(patch)) if (GUIDE_FIELDS.includes(k)) stamps[k] = bump(Math.max(stamps[k] || 0, cur.at || 0));
+  S.settings.guide = { ...cur, ...patch, stamps, at: bump(cur.at) };
   S.metaAt = bump(S.metaAt);
 }
 const art = (name, ...a) => (typeof HART !== 'undefined' && HART[name] ? HART[name](...a) : '');
-function meekoPic(cls = '', n = 0) {
-  const src = guideSrc(n);
-  return `<span class="meeko-pic ${cls}" aria-hidden="true"><span class="meeko-face">${art('dog')}${src ? `<img src="${esc(src)}" alt="" draggable="false" onerror="this.remove()">` : ''}</span><span class="meeko-hat">${art('hat')}</span></span>`;
+// His portrait: one of his photos, or the cartoon dog until there is one. No hat (several photos have their own).
+function meekoPic(cls = '', n = 0, src = guideSrc(n)) {
+  return `<span class="meeko-pic hat-off ${cls}" aria-hidden="true"><span class="meeko-face">${art('dog')}${src ? `<img src="${esc(src)}" alt="" draggable="false" onerror="this.remove()">` : ''}</span></span>`;
 }
 // Pick a line for an event. Lines needing a value we don't have are skipped; `k` walks through the
 // list so consecutive rounds don't repeat, and the same screen always shows the same line.
@@ -2425,15 +2487,15 @@ function guideSheet(ov) {
     <div class="sheet-head"><h2 id="gd-t">${cropping ? 'Frame the photo' : 'Your Game Master'}</h2>${cropping ? '' : `<button class="icon-btn sm" data-act="ov-close" aria-label="Close">${ic('close')}</button>`}</div>
     <div class="sheet-body"><div class="photo-edit">
       ${cropping
-        ? `<div class="stack"><div class="crop-frame" id="crop-frame"><div class="guides"></div></div><input class="range" id="crop-zoom" type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom"></div>`
-        : `<div class="stack guide-preview"><span class="meeko-pic xl" aria-hidden="true"><span class="meeko-face">${art('dog')}${src ? `<img src="${esc(src)}" alt="">` : ''}</span><span class="meeko-hat">${art('hat')}</span></span>${list.length > 1 ? `<p class="hint" style="text-align:center">Photo ${sel + 1} of ${list.length}</p>` : ''}</div>`}
+        ? `<div class="stack"><div class="crop-frame square" id="crop-frame"><div class="guides"></div></div><input class="range" id="crop-zoom" type="range" min="1" max="4" step="0.01" value="1" aria-label="Zoom"></div>`
+        : `<div class="stack guide-preview">${meekoPic('xl', 0, src)}${list.length > 1 ? `<p class="hint" style="text-align:center">Photo ${sel + 1} of ${list.length}</p>` : ''}</div>`}
       <div class="stack">
         ${cropping
-          ? `<p class="hint">Get his face in the middle of the frame. The witch hat goes on top automatically.</p>
+          ? `<p class="hint">Fit his head inside the circle, hat and all. That circle is what shows in the game.</p>
              <div class="row"><button class="btn btn-primary" data-act="crop-use">${ic('check')} Use this photo</button><button class="btn btn-ghost" data-act="crop-cancel">Cancel</button></div>`
           : `<div class="field"><label for="pl-name">Name</label><input class="input big" id="pl-name" data-bind="pl-name" value="${esc(ov.name)}" placeholder="Meeko" maxlength="30" autocomplete="off" enterkeyhint="done"></div>
-             <div class="field"><label>Photos <span class="muted">${list.length} of ${GUIDE_MAX}</span></label>
-               <div class="gp-grid">${list.map((ph, k) => `<div class="gp ${k === sel ? 'on' : ''}"><button class="gp-pick" data-act="gp-sel" data-i="${k}" aria-label="Show photo ${k + 1}">${ph.data ? `<img src="${esc(ph.data)}" alt="" draggable="false">` : art('dog')}</button><button class="gp-del" data-act="gp-del" data-i="${k}" aria-label="Remove photo ${k + 1}">${ic('close')}</button></div>`).join('')}
+             <div class="field"><label>Photos <span class="muted">${list.length > GUIDE_MAX ? list.length : `${list.length} of ${GUIDE_MAX}`}</span></label>
+               <div class="gp-grid">${list.map((ph, k) => `<div class="gp ${k === sel ? 'on' : ''}"><button class="gp-pick" data-act="gp-sel" data-i="${k}" aria-label="Show photo ${k + 1}">${ph.data ? `<img src="${esc(ph.data)}" alt="" draggable="false">` : art('dog')}</button><button class="gp-del" data-act="gp-del" data-i="${k}" aria-label="Remove photo ${k + 1}">${ic('close')}</button>${gpBadge(ph)}</div>`).join('')}
                  ${full ? '' : `<label class="gp gp-add" for="pl-lib">${ic('plus')}<span>Add</span></label>`}</div></div>
              <div class="photo-actions">
                <label class="btn ${full ? 'is-off' : ''}" for="${full ? '' : 'pl-cam'}">${ic('camera')} Take photo</label>
@@ -2441,24 +2503,72 @@ function guideSheet(ov) {
              </div>
              <input class="file-hidden" id="pl-cam" type="file" accept="image/*" capture="environment" data-photo-input>
              <input class="file-hidden" id="pl-lib" type="file" accept="image/*" multiple data-photo-input>
+             ${list.length > GUIDE_MAX ? `<p class="hint">Photos added on different devices are all kept. Remove some to add more.</p>` : ''}
+             ${guideCloudNote(list)}
              <div class="field"><label>He switches photo</label>
                <div class="seg gp-mode" role="group" aria-label="When ${esc(name)} switches photo">
                  <button data-act="gp-mode" data-m="each" aria-pressed="${ov.mode !== 'round'}">Every time he appears</button>
                  <button data-act="gp-mode" data-m="round" aria-pressed="${ov.mode === 'round'}">Each new round</button>
                </div></div>
-             <p class="hint">Pick up to ${GUIDE_MAX} at once from your library. He shows as Game Master ${esc(name)} in a witch hat on the round intros, answers, leaderboard and winner screens.${list.length ? ' Tap a photo to preview it, or the × to remove it.' : ' Until you add one he appears as a cartoon dog.'}</p>`}
+             <p class="hint">Pick up to ${GUIDE_MAX} at once from your library. He shows as Game Master ${esc(name)} on the round intros, answers, leaderboard and winner screens.${list.length ? ' Tap a photo to preview it, or the × to remove it. To frame one by hand, add it on its own.' : ' Until you add one he appears as a cartoon dog.'}</p>`}
       </div>
     </div></div>
     ${cropping ? '' : `<div class="sheet-foot"><span class="spacer"></span><button class="btn btn-ghost" data-act="ov-close">Cancel</button><button class="btn btn-primary" data-act="guide-save">Save</button></div>`}
   </div></div>`;
 }
-// Photos added several at a time skip the framing step: a 3:4 crop from the middle, a little above centre.
+// Backed up or not, per photo: a tick once it's in the cloud, an arrow while it uploads.
+const gpLive = (ph) => (ph.id && guide().photos.find((x) => x.id === ph.id)) || ph;
+const gpBackedUp = (ph) => { const live = gpLive(ph); return !!(live.id && live.asset && !Cloud.guidePhotoNeedsUpload(live)); };
+function gpBadge(ph) {
+  if (!ph.id || !Cloud.assets) return '';
+  const up = gpBackedUp(ph);
+  return `<span class="gp-cloud ${up ? 'ok' : 'wait'}" data-gp="${esc(ph.id)}" title="${up ? 'Backed up' : 'Not backed up yet'}">${ic(up ? 'check' : 'upload')}</span>`;
+}
+function guideCloudNote(list) {
+  const note = (cls, html) => `<div class="gp-cloudnote ${cls}" data-gp-note>${html}</div>`;
+  if (!list.length) return note('', '');
+  if (Cloud.http && !cloudLinked()) return note('warn', `<p><b>${Cloud.status === 'badkey' ? 'The event code needs entering again.' : 'These photos are only on this device.'}</b> Enter the event code to back them up, so every device with the code gets them and you never add them again.</p>${cloudKeyForm('cloud-key-g')}`);
+  const where = Cloud.http ? 'the cloud' : 'Claude';
+  if (Cloud.status === 'full') return note('', `<p>${Cloud.http ? "This month's cloud allowance is used up" : 'Cloud backup is full'}, so new photos stay on this device for now.</p>`);
+  if (Cloud.status === 'connecting' || Cloud.status === 'error') return note('', '<p>Backing up when the connection comes back. They are saved on this device meanwhile.</p>');
+  if (Cloud.status !== 'on') return note('', '');
+  if (list.some((ph) => !ph.id)) return note('', `<p>New photos go up to ${where} when you tap Save.</p>`);
+  if (list.some((ph) => !gpBackedUp(ph))) return note('', `<p>${ic('upload')} Backing up to ${where}… Keep the app open for a moment.</p>`);
+  return note('ok', `<p>${ic('check')} ${Cloud.http ? 'Saved to the cloud: every device with the event code gets them.' : 'Backed up to Claude: open this page on another device and they come too.'}</p>`);
+}
+function guideOverlay() { const o = overlays[overlays.length - 1]; return o && o.type === 'player' && o.guide ? o : null; }
+// Keep the open Meeko sheet's ticks and note current without redrawing it (typing and framing carry on).
+function refreshGuideCloud() {
+  const ov = guideOverlay();
+  if (!ov || !ov.guide || ov.crop || !ov.el) return;
+  for (const el of $$('[data-gp]', ov.el)) { const ph = ov.photos.find((x) => x.id === el.dataset.gp); if (ph) { const html = gpBadge(ph); if (html !== el.outerHTML) el.outerHTML = html; } }
+  const note = $('[data-gp-note]', ov.el); if (!note) return;
+  const html = guideCloudNote(ov.photos);
+  const t = document.createElement('div'); t.innerHTML = html;
+  if (t.firstElementChild && t.firstElementChild.outerHTML !== note.outerHTML) note.outerHTML = html;
+}
+// Photos added or removed on another device while the sheet is open show up in it straight away.
+function refreshGuideSheet() {
+  const ov = guideOverlay();
+  if (!ov || !ov.guide || ov.saving || !ov.el) return;
+  const live = guide().photos; const liveIds = new Set(live.map((ph) => ph.id)); const orig = new Set(ov.origIds || []);
+  const n = ov.photos.length;
+  ov.photos = ov.photos.filter((ph) => !ph.id || liveIds.has(ph.id) || !orig.has(ph.id));
+  let changed = ov.photos.length !== n;
+  for (const ph of live) if (!orig.has(ph.id)) { ov.photos.push({ ...ph, data: Photos.src(guidePhotoRec(ph)) }); orig.add(ph.id); changed = true; }
+  ov.origIds = [...orig];
+  if (!changed) { refreshGuideCloud(); return; }
+  ov.sel = clamp(ov.sel || 0, 0, Math.max(0, ov.photos.length - 1));
+  if (!ov.crop) renderOverlay(ov);
+}
+// Photos added several at a time skip the framing step: a square crop (he shows in a circle) from the
+// middle, a little above centre so ears and hats stay in.
 function autoCropDataURL(canvas) {
-  const W = 600; const H = 800; const sw = canvas.width; const sh = canvas.height;
+  const W = 600; const H = 600; const sw = canvas.width; const sh = canvas.height;
   let cw = sw; let ch = sh;
   if (sw / sh > W / H) cw = (sh * W) / H; else ch = (sw * H) / W;
   const out = document.createElement('canvas'); out.width = W; out.height = H;
-  out.getContext('2d').drawImage(canvas, (sw - cw) / 2, (sh - ch) * 0.35, cw, ch, 0, 0, W, H);
+  out.getContext('2d').drawImage(canvas, (sw - cw) / 2, (sh - ch) * 0.3, cw, ch, 0, 0, W, H);
   return out.toDataURL('image/jpeg', 0.86);
 }
 
@@ -2674,10 +2784,11 @@ function setupCropper(ov) {
   zoom.addEventListener('input', () => zoomAt(cr.min * Number(zoom.value), fw / 2, fh / 2));
 }
 function cropToDataURL(cr) {
-  const out = document.createElement('canvas'); out.width = 600; out.height = 800;
+  const H = Math.round((600 * cr.fh) / cr.fw) || 800;
+  const out = document.createElement('canvas'); out.width = 600; out.height = H;
   const ctx = out.getContext('2d');
   const k = 600 / cr.fw;
-  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, 600, 800);
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, 600, H);
   ctx.setTransform(cr.scale * k, 0, 0, cr.scale * k, cr.x * k, cr.y * k);
   ctx.drawImage(cr.canvas, 0, 0);
   return out.toDataURL('image/jpeg', 0.86);
@@ -3154,7 +3265,7 @@ const ACT = {
   'edit-guide'() {
     const gd = guide();
     const photos = gd.photos.map((ph) => ({ ...ph, data: Photos.src(guidePhotoRec(ph)) }));
-    pushOverlay({ type: 'player', guide: true, id: null, tmpId: GUIDE_ID, name: gd.name, mode: gd.mode, photos, sel: 0, photo: undefined, crop: null, after: (ov) => { if (ov.crop) setupCropper(ov); } });
+    pushOverlay({ type: 'player', guide: true, id: null, tmpId: GUIDE_ID, name: gd.name, mode: gd.mode, orig: { name: gd.name, mode: gd.mode }, origIds: gd.photos.map((ph) => ph.id), photos, sel: 0, photo: undefined, crop: null, after: (ov) => { if (ov.crop) setupCropper(ov); } });
   },
   'gp-sel'(el) { const ov = topOverlay('player'); if (!ov || !ov.guide) return; ov.sel = +el.dataset.i; renderOverlay(ov); },
   'gp-del'(el) { const ov = topOverlay('player'); if (!ov || !ov.guide) return; ov.photos.splice(+el.dataset.i, 1); ov.sel = Math.min(ov.sel || 0, Math.max(0, ov.photos.length - 1)); renderOverlay(ov); },
@@ -3163,16 +3274,29 @@ const ACT = {
     const ov = topOverlay('player'); if (!ov || !ov.guide || ov.saving) return;
     ov.saving = true;
     try {
-      const cur = guide(); const keep = [];
+      const cur = guide(); const keep = []; const orig = new Set(ov.origIds || []);
       for (const ph of ov.photos) {
-        if (ph.id) { keep.push({ id: ph.id, at: ph.at, asset: ph.asset || null, assetAt: ph.assetAt || 0 }); continue; }
+        // Kept photos take their current record, in case an upload finished while the sheet was open
+        // (and one removed on another device meanwhile stays removed).
+        if (ph.id) { const c = cur.photos.find((x) => x.id === ph.id); if (c) keep.push({ id: c.id, at: c.at, asset: c.asset || null, assetAt: c.assetAt || 0 }); continue; }
         const id = uid('mk'); const at = Date.now();
         guideSaving.add(id);
         await Photos.set(id, ph.data, at);
         keep.push({ id, at, asset: null, assetAt: 0 });
       }
-      for (const old of cur.photos) if (!keep.some((k) => k.id === old.id)) { await Photos.remove(old.id); Cloud.dropAsset(old.asset); }
-      setGuide({ name: String(ov.name || '').trim().slice(0, 30) || 'Meeko', mode: ov.mode === 'round' ? 'round' : 'each', photos: keep, hasPhoto: keep.length > 0, photoAt: null, photoAsset: null, photoAssetAt: null });
+      // Photos another device added while the sheet was open are kept too.
+      for (const c of cur.photos) if (!orig.has(c.id) && !keep.some((k) => k.id === c.id)) keep.push({ id: c.id, at: c.at, asset: c.asset || null, assetAt: c.assetAt || 0 });
+      // Removed photos are remembered (stamped after they were added, whatever this device's clock says),
+      // so a device that still has them doesn't bring them back.
+      const raw = isObj(S.settings.guide) ? S.settings.guide : {};
+      const removed = { ...(isObj(raw.removed) ? raw.removed : {}) };
+      for (const old of cur.photos) if (orig.has(old.id) && !keep.some((k) => k.id === old.id)) { removed[old.id] = bump(Math.max(old.at || 0, removed[old.id] || 0)); await Photos.remove(old.id); Cloud.dropAsset(old.asset); }
+      const patch = { photos: keep, removed, hasPhoto: keep.length > 0, photoAt: null, photoAsset: null, photoAssetAt: null };
+      const name = String(ov.name || '').trim().slice(0, 30) || 'Meeko'; const mode = ov.mode === 'round' ? 'round' : 'each';
+      const o = ov.orig || {};
+      if (name !== o.name) patch.name = name;
+      if (mode !== o.mode) patch.mode = mode;
+      setGuide(patch);
       guideSaving.clear();
       popOverlay();
       commit(null, { immediate: true });
@@ -3182,7 +3306,8 @@ const ACT = {
   },
   'open-voice'() {
     const gd = guide(); const v = Voice.find(gd.voiceURI, gd.voiceName);
-    pushOverlay({ type: 'voice', uri: v ? v.voiceURI : gd.voiceURI, name: gd.voiceName, rate: gd.rate, pitch: gd.pitch, voice: gd.voice, bark: gd.bark });
+    const orig = { uri: v ? v.voiceURI : gd.voiceURI, name: gd.voiceName, rate: gd.rate, pitch: gd.pitch, voice: gd.voice, bark: gd.bark };
+    pushOverlay({ type: 'voice', ...orig, orig });
   },
   'vp-pick'(el) {
     const ov = topOverlay('voice'); if (!ov) return;
@@ -3201,7 +3326,13 @@ const ACT = {
   'vp-save'() {
     const ov = topOverlay('voice'); if (!ov) return;
     const v = ov.uri ? Voice.find(ov.uri, ov.name) : null;
-    setGuide({ voiceURI: ov.uri || '', voiceName: ov.uri ? (v ? v.name : ov.name || '') : '', rate: ov.rate, pitch: ov.pitch, voice: ov.voice, bark: ov.bark });
+    const o = ov.orig || {}; const patch = {};
+    if ((ov.uri || '') !== (o.uri || '')) { patch.voiceURI = ov.uri || ''; patch.voiceName = ov.uri ? (v ? v.name : ov.name || '') : ''; }
+    if (ov.rate !== o.rate) patch.rate = ov.rate;
+    if (ov.pitch !== o.pitch) patch.pitch = ov.pitch;
+    if (ov.voice !== o.voice) patch.voice = ov.voice;
+    if (ov.bark !== o.bark) patch.bark = ov.bark;
+    if (Object.keys(patch).length) setGuide(patch);
     Voice.stop(); popOverlay(); commit(); toast('Saved');
   },
   'toggle-voice'() {
@@ -3220,7 +3351,10 @@ const ACT = {
     const key = inp ? inp.value : '';
     if (!key.trim()) { if (inp) inp.focus(); toast('Type the event code first'); return; }
     el.disabled = true; const label = el.innerHTML; el.textContent = 'Connecting…';
-    try { await Cloud.connect(key); toast(Cloud.status === 'on' ? 'Cloud backup is on' : 'Event code saved. Backing up as soon as the cloud answers.'); render(); }
+    try {
+      await Cloud.connect(key); toast(Cloud.status === 'on' ? 'Cloud backup is on' : 'Event code saved. Backing up as soon as the cloud answers.'); render();
+      const gov = topOverlay('player'); if (gov && gov.guide) { refreshGuideSheet(); renderOverlay(gov); }
+    }
     catch (e) { el.disabled = false; el.innerHTML = label; toast(e && e.code === 'revoked' ? "That event code isn't right" : "Couldn't reach the cloud. Check the internet and try again.", 'bad'); }
   },
   async 'cloud-disconnect'() {
@@ -3383,6 +3517,16 @@ async function onRestorePicked(input) {
     ? { settings: S.settings.guide, photos: guide().photos.map((ph) => [ph.id, Photos.map[ph.id]]).filter((x) => x[1]) } : null;
   if (keepGuide) incoming.settings.guide = keepGuide.settings;
   const inGuide = isObj(incoming.settings.guide) ? incoming.settings.guide : null;
+  if (inGuide && !keepGuide) {
+    // Meeko from the backup replaces the current one on every device: current photos it doesn't have are
+    // marked removed (or the cloud would merge them back in), and its settings are stamped as newest.
+    const ids = new Set(guidePhotoList(inGuide).map((ph) => ph.id));
+    const removed = isObj(inGuide.removed) ? { ...inGuide.removed } : {};
+    for (const ph of guide().photos) if (!ids.has(ph.id)) removed[ph.id] = bump(Math.max(ph.at || 0, removed[ph.id] || 0, now));
+    inGuide.removed = removed;
+    inGuide.at = bump(Math.max(now, Number(isObj(S.settings.guide) && S.settings.guide.at) || 0));
+    inGuide.stamps = Object.fromEntries(GUIDE_FIELDS.map((k) => [k, inGuide.at]));
+  }
   const inFile = (id) => isObj(photosIn[id]) && String(photosIn[id].data || '').startsWith('data:image/');
   // Cloud photos the restored data no longer points at are deleted (photos in the file are uploaded afresh).
   const inGuidePhotos = inGuide && Array.isArray(inGuide.photos) ? inGuide.photos.filter(isObj) : [];

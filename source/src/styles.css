@@ -370,6 +370,9 @@ p { margin: 0; }
   linear-gradient(90deg, transparent calc(33.33% - 1px), rgba(255,255,255,.28) calc(33.33% - 1px) 33.33%, transparent 33.33% calc(66.66% - 1px), rgba(255,255,255,.28) calc(66.66% - 1px) 66.66%, transparent 66.66%),
   linear-gradient(0deg, transparent calc(33.33% - 1px), rgba(255,255,255,.28) calc(33.33% - 1px) 33.33%, transparent 33.33% calc(66.66% - 1px), rgba(255,255,255,.28) calc(66.66% - 1px) 66.66%, transparent 66.66%);
   box-shadow: inset 0 0 0 2px rgba(255,203,71,.8); border-radius: var(--r-md); }
+/* Meeko shows in a circle, so his photos are framed square with the circle marked. */
+.crop-frame.square { aspect-ratio: 1 / 1; }
+.crop-frame.square .guides { background: radial-gradient(circle closest-side, transparent calc(100% - 3px), rgba(255,203,71,.9) calc(100% - 3px) 100%, rgba(5,4,10,.55) 100%); }
 .photo-actions { display: flex; flex-direction: column; gap: 10px; }
 .photo-actions .btn { justify-content: flex-start; }
 .file-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
@@ -1011,3 +1014,17 @@ body.is-play[data-stage="board"] .spooky .bat, body.is-play[data-stage="final"] 
 .vp-txt b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vp-txt small { color: var(--muted); font-size: 13px; }
 .vp-play svg { width: 18px; height: 18px; }
+
+/* Meeko's portrait has no hat, so no room is kept above it */
+.meeko-pic.hat-off { margin-top: 0; }
+.meeko-pic.xl.hat-off { margin: 8px auto 0; }
+/* Backed-up badge on each of his photos, and the note under them */
+.gp-cloud { position: absolute; bottom: -4px; right: -4px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--panel); }
+.gp-cloud svg { width: 12px; height: 12px; }
+.gp-cloud.ok { background: var(--slime); color: #12300a; }
+.gp-cloud.wait { background: var(--raised); color: var(--muted); }
+.gp-cloudnote { display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: var(--muted); }
+p.gp-cloudnote { flex-direction: row; align-items: center; gap: 8px; }
+.gp-cloudnote svg { width: 16px; height: 16px; flex: none; }
+.gp-cloudnote.ok { color: var(--slime); }
+.gp-cloudnote.warn { background: rgba(255,138,31,.1); border: 1px solid rgba(255,138,31,.45); border-radius: 14px; padding: 12px 14px; color: var(--text); }

@@ -1,6 +1,6 @@
 // Offline cache for the home-screen version. Pages: network first so updates arrive; everything else: cache first.
 // The cloud API and photos (/api, /_blob) always go to the network: the app keeps its own copy of both.
-const CACHE = 'trivia-day-7c64cd74e2';
+const CACHE = 'trivia-day-dd6d65da18';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {
