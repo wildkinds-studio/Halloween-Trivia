@@ -978,3 +978,17 @@ body.is-play[data-stage="q"] .spooky .bat, body.is-play[data-stage="a"] .spooky 
 body.is-play[data-stage="board"] .spooky .bat, body.is-play[data-stage="final"] .spooky .bat { display: none; }
 .meeko-replay { position: relative; }
 .meeko-replay::after { content: ""; position: absolute; inset: -7px; }
+
+/* Meeko's photo set (Settings > Photos and name) */
+.gp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 10px; }
+.gp { position: relative; aspect-ratio: 1; }
+.gp-pick { width: 100%; height: 100%; padding: 0; border-radius: 50%; overflow: hidden; border: 3px solid var(--line); background: var(--raised); display: block; }
+.gp-pick img, .gp-pick svg { width: 100%; height: 100%; object-fit: cover; object-position: 50% 35%; display: block; }
+.gp.on .gp-pick { border-color: var(--pumpkin); box-shadow: 0 0 0 3px rgba(255,138,31,.25); }
+.gp-del { position: absolute; top: -6px; right: -6px; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--panel); background: var(--raised); color: var(--text); display: grid; place-items: center; padding: 0; }
+.gp-del::after { content: ""; position: absolute; inset: -9px; }
+.gp-del svg { width: 14px; height: 14px; }
+.gp-add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 50%; border: 2px dashed var(--line); color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; }
+.gp-add svg { width: 20px; height: 20px; }
+.gp-mode { flex-wrap: wrap; border-radius: 22px; }
+.btn.is-off { opacity: .45; pointer-events: none; }
