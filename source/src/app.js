@@ -2123,6 +2123,9 @@ function roundHasContent(r) {
   return r.questions.some((q) => (q.text || '').trim() || (q.answer || '').trim() || (q.wrong || []).some((w) => String(w || '').trim()));
 }
 async function openRoundPrivately(rid, from) {
+  const g0 = G(); if (!g0) return;
+  // Fold in any phone save first, so the round opens as it really is and edits here build on it.
+  if (Cloud.http && Cloud.pulled && expectsPhones(g0)) await Promise.race([Cloud.pull().catch(() => {}), sleep(4000)]);
   const g = G(); const r = g && g.rounds.find((x) => x.id === rid); if (!r) return;
   if (roundHasContent(r)) {
     const name = nameOf(r.masterId);
@@ -2132,7 +2135,7 @@ async function openRoundPrivately(rid, from) {
     if (!(await askConfirm({ title: `Only ${name} should look`, body, ok: `I'm ${name}, show it` }))) return;
   }
   const cur = G() && G().rounds.find((x) => x.id === rid); if (!cur) return;
-  UI.unlocked = { rid, ids: new Set(cur.questions.map((q) => q.id)) };
+  UI.unlocked = { rid, ids: new Set(cur.questions.filter(qHasContent).map((q) => q.id)) };
   navigate('round', { roundId: rid, returnTo: from });
 }
 const GUEST_MAX_Q = 40;
@@ -2231,8 +2234,20 @@ function applyEntry(id, e) {
   const at = Number(e.updatedAt) || 0;
   if (at <= (r.entryAt || 0)) return '';
   if (g.status !== 'setup' && (roundStarted(g, r) || g.status === 'finished')) return ''; // too late: it's being played
-  const er = e.round; const str = (v, n) => String(v == null ? '' : v).slice(0, n);
-  if (!Array.isArray(er.questions) || er.questions.length > GUEST_MAX_Q || JSON.stringify(er).length > 70000) return '';
+  const str = (v, n) => String(v == null ? '' : v).slice(0, n);
+  const phone = e.round;
+  if (!Array.isArray(phone.questions) || phone.questions.length > GUEST_MAX_Q || JSON.stringify(phone).length > 70000) return '';
+  // The cloud keeps what the phone started from (base), so only what the phone actually changed is applied:
+  // anything added or edited on the iPad meanwhile stays. Where both changed the same thing, the phone wins.
+  // Without a base (an older save), questions edited here after the phone saved are kept.
+  const here = { category: r.category, emoji: r.emoji, themeId: r.themeId, themeAuto: r.themeAuto !== false, questions: r.questions.map((q) => ({ id: q.id, text: q.text, answer: q.answer, wrong: q.wrong, diff: q.diff, seed: q.seed })) };
+  const base = isObj(e.base) && Array.isArray(e.base.questions) ? e.base : null;
+  let er = base ? mergeRound(base, phone, here) : phone;
+  if (!base) {
+    const ids = new Set(phone.questions.filter(isObj).map((q) => q.id));
+    const fresh = r.questions.filter((q) => (q.at || 0) > at);
+    er = { ...phone, questions: phone.questions.map((x) => (isObj(x) && fresh.some((q) => q.id === x.id) ? here.questions.find((q) => q.id === x.id) : x)).concat(here.questions.filter((q) => !ids.has(q.id) && fresh.some((f) => f.id === q.id))) };
+  }
   keepPlace(g, r, () => {
     r.category = str(er.category, 60); r.emoji = str(er.emoji, 16).trim();
     if (er.themeAuto === false && THEME_BY_ID[er.themeId]) { r.themeId = er.themeId; r.themeAuto = false; }
@@ -2335,11 +2350,10 @@ const Guest = {
   },
   open({ player, gameName, round, base, ver, mine }) {
     const j = UI.guest;
-    const wasReady = j.status === 'ready';
     Object.assign(j, { player: player || 'Guest', gameName: gameName || '', ver: ver || '', base: isObj(base) ? base : null, lastSent: isObj(base) ? stableStr(base) : '', dirty: false, offline: false, err: '', stuck: false, dirtySince: 0 });
     // Someone else's round can't be read just by opening their link on the wrong phone: the first time a
     // round with questions in it opens on a phone, it asks who's looking.
-    j.status = !wasReady && !mine && payloadHasContent(round) && !lsGet(this.okKey()) ? 'confirm' : 'ready';
+    j.status = !mine && payloadHasContent(round) && !lsGet(this.okKey()) ? 'confirm' : 'ready';
     S = guestState(j, round); UI.gameId = j.g; UI.roundId = j.r; UI.route = 'round';
     render();
   },
@@ -2372,15 +2386,18 @@ const Guest = {
       const b = await res.json().catch(() => ({}));
       j.offline = false;
       if (res.ok) {
-        Object.assign(j, { ver: String(b.ver || ''), base: round, lastSent: sig, err: '' });
+        Object.assign(j, { ver: String(b.ver || ''), base: round, lastSent: sig, err: '', leftRound: null });
         if (j.at === sent) { j.dirty = false; j.dirtySince = 0; lsDel(this.key()); }
       } else if (b.code === 'changed' && isObj(b.round)) {
-        // Changed on the iPad (or in another tab) since this copy was loaded: fold both together and send again.
-        const merged = mergeRound(j.base, this.payload(), b.round);
-        Object.assign(j, { ver: String(b.ver || ''), base: b.round, lastSent: stableStr(b.round), err: '' });
-        S = guestState(j, merged); render();
-        toast('Your round was also changed on the iPad. Both sets of changes are kept.');
-        this.markDirty(); clearTimeout(this.timer); this.timer = setTimeout(() => this.save(), 600);
+        // Changed since this copy was loaded: by this phone's own save on the way out (sent in the background),
+        // or on the iPad / in another tab. Fold both together and send again if anything's left to send.
+        const mine = this.payload();
+        const own = isObj(j.leftRound) && stableStr(b.round) === stableStr(j.leftRound);
+        const merged = mergeRound(own ? b.round : j.base, mine, b.round);
+        Object.assign(j, { ver: String(b.ver || ''), base: b.round, lastSent: stableStr(b.round), err: '', leftRound: null });
+        if (stableStr(merged) !== stableStr(mine)) { S = guestState(j, merged); render(); if (!own) toast('Your round was also changed on the iPad. Both sets of changes are kept.'); }
+        if (stableStr(merged) !== stableStr(b.round)) { this.markDirty(); clearTimeout(this.timer); this.timer = setTimeout(() => this.save(), 600); }
+        else if (j.at === sent) { j.dirty = false; j.dirtySince = 0; lsDel(this.key()); }
       } else if (b.code === 'locked') { j.dirty = false; lsDel(this.key()); j.status = 'locked'; render(); }
       else if (res.status === 401) { j.status = 'badlink'; render(); }
       else if (res.status === 404) { j.status = 'gone'; render(); }
@@ -2398,7 +2415,8 @@ const Guest = {
   leave() {
     const j = UI.guest; if (!j || !j.dirty || j.stuck || j.status !== 'ready' || j.leftAt === j.at) return;
     const round = this.payload(); if (!round) return;
-    j.leftAt = j.at;
+    j.leftAt = j.at; j.leftRound = round;
+    j.lastSent = ''; // not confirmed: the next save always goes, even if it puts things back as they were
     try { fetch(this.api(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ round, base: j.ver }), keepalive: true }).catch(() => {}); } catch { /* best effort */ }
   },
   statusText() {
@@ -3560,7 +3578,7 @@ const ACT = {
     rerenderQCard(q);
   },
   'q-make-right'(el) {
-    const { g, q } = findQ(el.dataset.q); const k = +el.dataset.i; if (!q) return;
+    const { g, r, q } = findQ(el.dataset.q); const k = +el.dataset.i; if (!q) return; seeQ(r, q.id);
     const was = q.answer; q.answer = q.wrong[k] || ''; q.wrong[k] = was;
     touchQ(q); touchGame(g); commit(null, { render: false });
     rerenderQCard(q); Sound.play('tap');
@@ -3888,15 +3906,15 @@ const BIND = {
     touchGame(g); commit(null, { render: false }); refreshRoundSide(r);
   },
   'r-emoji'(el) { const g = G(); const r = curEditRound(); if (!r) return; r.emoji = el.value.trim(); touchRound(r); touchGame(g); commit(null, { render: false }); refreshRoundSide(r); },
-  'q-text'(el) { const { g, q } = findQ(el.dataset.q); if (!q) return; q.text = el.value; touchQ(q); touchGame(g); commit(null, { render: false }); autosize(el); },
+  'q-text'(el) { const { g, r, q } = findQ(el.dataset.q); if (!q) return; seeQ(r, q.id); q.text = el.value; touchQ(q); touchGame(g); commit(null, { render: false }); autosize(el); },
   'q-ans'(el) {
-    const { g, q } = findQ(el.dataset.q); if (!q) return;
+    const { g, r, q } = findQ(el.dataset.q); if (!q) return; seeQ(r, q.id);
     const v = el.value.replace(/[\r\n]+/g, ' ');
     if (v !== el.value) el.value = v;
     q.answer = v; touchQ(q); touchGame(g); commit(null, { render: false }); autosize(el); refreshQPreview(q);
   },
   'q-wrong'(el) {
-    const { g, q } = findQ(el.dataset.q); const k = +el.dataset.i; if (!q || k >= q.wrong.length) return;
+    const { g, r, q } = findQ(el.dataset.q); const k = +el.dataset.i; if (!q || k >= q.wrong.length) return; seeQ(r, q.id);
     q.wrong[k] = el.value.replace(/[\r\n]+/g, ' ');
     touchQ(q); touchGame(g); commit(null, { render: false }); refreshQPreview(q);
   },

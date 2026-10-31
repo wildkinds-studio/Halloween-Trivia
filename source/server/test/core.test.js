@@ -110,6 +110,7 @@ r = await post3([{ path: 'games/y', data: { id: 'y' } }]); ok(r.status === 200, 
   r = await handleDb(req('GET', '/api/db', undefined, K), c4); d = await r.json();
   ok(d.docs['entries/g1.ra'] && d.docs['entries/g1.ra'].round.questions[0].text === 'New A?' && d.docs['games/g1'].rounds[0].questions[0].text === 'Secret A?', 'entry kept apart from the game');
   ok(d.usage.guest === 1, 'guest saves counted apart');
+  ok(d.docs['entries/g1.ra'].base && d.docs['entries/g1.ra'].base.category === 'Horror' && d.docs['entries/g1.ra'].base.questions[0].text === 'Secret A?', 'entry keeps the copy it was made from');
   r = await E('POST', 'g=g1&r=ra&t=' + ta, { round: { questions: 'nope' } }); ok(r.status === 400, 'bad round 400');
   r = await E('POST', 'g=g1&r=ra&t=' + ta, { round: { questions: Array.from({ length: 41 }, (_, i) => ({ id: 'q' + i })) } }); ok(r.status === 400, 'too many questions 400');
   r = await E('POST', 'g=g1&r=ra&t=' + ta, { round: { questions: [{ id: '../x' }] } }); ok(r.status === 400, 'bad question id 400');
